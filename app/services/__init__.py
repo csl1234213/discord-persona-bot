@@ -1,0 +1,1 @@
+"""Discord-independent domain services."""

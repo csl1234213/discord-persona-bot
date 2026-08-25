@@ -1,0 +1,14 @@
+services:
+  discord-persona-bot:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    volumes:
+      - persona-data:/app/data
+
+volumes:
+  persona-data:
