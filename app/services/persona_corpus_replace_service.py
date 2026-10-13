@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.errors import AppError
 from app.db.models import DiscordConversation, Persona, PersonaVersion, Utterance
 from app.services.persona_update_service import PersonaUpdateService
@@ -27,6 +28,7 @@ class PersonaCorpusReplaceService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    @admin_required
     async def replace_utterance_containing(
         self,
         *,

@@ -1,17 +1,24 @@
+import asyncio
+import logging
 from uuid import UUID
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from app.core.errors import ValidationFailed
 from app.repositories.utterance_repository import UtteranceRepository
 from app.schemas.persona import UtteranceCreate
 from app.services.attachment_import_service import AttachmentImportService
 from app.services.language_analysis_service import LanguageAnalysisService
+from app.services.persona_configuration_service import PersonaConfigurationService
 from app.services.persona_update_service import PersonaUpdateService
 from bot.checks.admin import owner_only
+from bot.checks.security import admin_session, require_origin
 from bot.modals.utterance_modal import UtteranceModal
 from bot.views.confirmation_view import ConfirmationView
+
+logger = logging.getLogger(__name__)
 
 
 class UtteranceAdminCog(commands.Cog):
@@ -30,7 +37,7 @@ class UtteranceAdminCog(commands.Cog):
         text: str,
         verified: bool = False,
     ):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             item = await PersonaUpdateService(db).add_utterance(
                 UUID(persona_id), UUID(version_id), UtteranceCreate(text=text, verified=verified)
             )
@@ -39,7 +46,7 @@ class UtteranceAdminCog(commands.Cog):
     @utterance.command(name="list", description="列出版本言论")
     @owner_only()
     async def list_items(self, interaction: discord.Interaction, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             items = await UtteranceRepository(db).list_for_version(UUID(version_id))
         text = (
             "\n".join(
@@ -53,7 +60,7 @@ class UtteranceAdminCog(commands.Cog):
     @utterance.command(name="show", description="显示一条言论")
     @owner_only()
     async def show(self, interaction: discord.Interaction, utterance_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             item = await UtteranceRepository(db).get(UUID(utterance_id))
         await interaction.response.send_message(
             item.text if item else "言论不存在。", ephemeral=True
@@ -67,7 +74,7 @@ class UtteranceAdminCog(commands.Cog):
         utterance_id: str,
         verified: bool,
     ):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             item = await PersonaUpdateService(db).set_verified(
                 UUID(persona_id), UUID(version_id), UUID(utterance_id), verified
             )
@@ -106,7 +113,7 @@ class UtteranceAdminCog(commands.Cog):
         version_id: str,
         utterance_id: str,
     ):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             await PersonaUpdateService(db).delete_utterance(
                 UUID(persona_id), UUID(version_id), UUID(utterance_id)
             )
@@ -121,7 +128,7 @@ class UtteranceAdminCog(commands.Cog):
         version_id: str,
         utterance_id: str,
     ):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
             item = await UtteranceRepository(db).get(UUID(utterance_id))
             if item is None or item.persona_version_id != UUID(version_id):
@@ -130,13 +137,15 @@ class UtteranceAdminCog(commands.Cog):
             initial = {"text": item.text, "context": item.context, "topic": item.topic or ""}
 
         async def save(save_interaction: discord.Interaction, values: dict[str, str]) -> None:
-            async with self.bot.db_sessionmaker() as db:
-                await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-                target = await UtteranceRepository(db).get(UUID(utterance_id))
-                target.text = values["text"]
-                target.context = values["context"]
-                target.topic = values["topic"] or None
-                await db.commit()
+            require_origin(interaction, save_interaction)
+            async with admin_session(self.bot, save_interaction) as db:
+                await PersonaConfigurationService(db).update(
+                    UUID(persona_id),
+                    UUID(version_id),
+                    "utterance",
+                    values,
+                    record_id=UUID(utterance_id),
+                )
             await save_interaction.response.send_message("言论已更新。", ephemeral=True)
 
         await interaction.response.send_modal(
@@ -153,10 +162,34 @@ class UtteranceAdminCog(commands.Cog):
         attachment: discord.Attachment,
         verify: bool = False,
     ):
-        data = await attachment.read(use_cached=True)
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
+            try:
+                parsed_persona_id = UUID(persona_id)
+                parsed_version_id = UUID(version_id)
+            except ValueError:
+                raise ValidationFailed("Invalid persona or version ID.") from None
+            await PersonaUpdateService(db).require_draft(parsed_persona_id, parsed_version_id)
+            if attachment.size > self.bot.settings.max_import_bytes:
+                raise ValidationFailed("Attachment exceeds the configured file-size limit.")
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                async with asyncio.timeout(20):
+                    # Text/JSONL files may not be supported by Discord's media proxy.
+                    data = await attachment.read(use_cached=False)
+            except (TimeoutError, discord.HTTPException) as exc:
+                logger.warning(
+                    "Import failed stage=attachment_read interaction_id=%s "
+                    "error_type=%s status=%s code=%s",
+                    interaction.id,
+                    type(exc).__name__,
+                    exc.status if isinstance(exc, discord.HTTPException) else 0,
+                    exc.code if isinstance(exc, discord.HTTPException) else 0,
+                )
+                raise ValidationFailed(
+                    "Attachment could not be read. Please try again later."
+                ) from None
             preview = await AttachmentImportService(db, self.bot.settings).preview(
-                version_id=UUID(version_id),
+                version_id=parsed_version_id,
                 filename=attachment.filename,
                 content_type=attachment.content_type,
                 data=data,
@@ -164,9 +197,10 @@ class UtteranceAdminCog(commands.Cog):
             )
 
         async def confirm(confirm_interaction: discord.Interaction) -> None:
-            async with self.bot.db_sessionmaker() as db:
+            require_origin(interaction, confirm_interaction)
+            async with admin_session(self.bot, confirm_interaction) as db:
                 records = await AttachmentImportService(db, self.bot.settings).persist(
-                    UUID(persona_id), UUID(version_id), preview
+                    parsed_persona_id, parsed_version_id, preview
                 )
             await confirm_interaction.response.edit_message(
                 content=f"已导入 {len(records)} 条言论。", embed=None, view=None
@@ -182,12 +216,12 @@ class UtteranceAdminCog(commands.Cog):
             inline=False,
         )
         view = ConfirmationView(owner_user_id=interaction.user.id, on_confirm=confirm)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @utterance.command(name="analyze", description="分析已核验言论并提出规则建议")
     @owner_only()
     async def analyze(self, interaction: discord.Interaction, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             items = await UtteranceRepository(db).list_for_version(UUID(version_id), verified=True)
         analysis = LanguageAnalysisService().analyze(items)
         embed = discord.Embed(title="语言分析建议", description="这些建议尚未发布。")

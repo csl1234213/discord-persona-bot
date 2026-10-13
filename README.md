@@ -1,40 +1,74 @@
 # Discord Persona Bot
 
-这是一个直接运行在 Discord 内的严格证据人物语言模拟机器人。产品入口是 Slash Command、私信和明确 `@机器人`，没有 React 前端，也不以 FastAPI 作为产品入口。
+依據核實資料，在 Discord 模擬人物語氣。
 
-> 这是基于所提供材料生成的 AI 语言风格模拟，并非本人，也不代表本人当前观点。
+由你自行安裝、設定和維護。人物資料、聊天記錄和機器人密鑰，都由你保管。
 
-机器人只使用创建者提供并明确核验的言论。人格参数只调整语气，不能扩张事实边界；证据覆盖不足时不会调用 LLM，而是直接说明“现有言论不足以判断这个人会怎样回应这个问题”。Discord 对话不会被自动加入语料，也不会用于自动训练。
+> AI 模擬語氣，並非本人。安全驗收尚未完成，請先在獨立測試伺服器試用。
 
-## 架构与安全边界
+## 開始了解
+
+| 功能 | 用途 |
+| --- | --- |
+| 日常聊天 | 在指定頻道直接聊天，無需提及機器人 |
+| 建立人物 | 加入獲准資料，核實後再發布 |
+| 調整語氣 | 調整說話方式，不改資料範圍 |
+| 重新聊天 | 結束目前對話，保留舊記錄 |
+| 刪除資料 | 刪除自己在指定頻道的本地會話 |
+| 自行管理 | 由建立者管理人物、資料與版本 |
+
+## 如何聊天
+
+在指定頻道，直接發訊息或提及機器人即可聊天。在其他頻道提及它，只會收到前往聊天專區的提示。私人訊息、其他伺服器、其他機器人及討論串的訊息不會觸發聊天。
+
+聊天頻道以 `DISCORD_CHAT_CHANNEL_ID` 設定，不看頻道名稱。
+
+> 回覆不代表人物本人的想法或目前立場。
+
+人物回答以建立者提供並核實的資料為依據。語氣設定不能增加不存在的事實。資料不足時，應說明不知道，不補寫人物經歷。聊天內容不會自動加入人物資料，也不會自動用來訓練。
+
+## 自行維護
+
+你需要自行處理以下事項；本專案不包含代管服務。
+
+| 項目 | 你需要做的事 |
+| --- | --- |
+| 保持運行 | 保持執行機器人的電腦與網絡可用 |
+| 管理密鑰 | 私下保存密鑰，外洩時立即更換 |
+| 更新資料 | 只加入獲准內容，發布前逐條核實 |
+| 保管備份 | 更新前備份，依私隱政策處理舊副本 |
+| 更新程式 | 先在測試環境檢查，再安排更新 |
+| 查看狀態 | 遇到問題先查看狀態與本機記錄 |
+
+不要把密鑰、私人文字、錄音、聊天資料或備份上傳 GitHub。遇到錯誤時，也不要公開未遮蓋的設定或記錄。
+
+技術安裝指令見下文。已整理的發行安裝說明見 [release/README.md](release/README.md)；目前仍未通過完整發行驗收，不能視為正式上線保證。
+
+## 運作方式
 
 ```text
-Discord /chat、DM、@mention
-  -> 权限、白名单、冷却与并发检查
-  -> DiscordContextResolver（用户、角色、关系、称呼）
-  -> PersonaChatService（自动跟随当前活动版本、人格合并）
-  -> verified-only Hybrid Retrieval（BM25 + 中文短语/n-gram + 元数据排名融合）
-  -> 关键词命中优先直接返回原语料，BM25/Hybrid 仅辅助同级候选排序
-  -> 直出模式无关键词时有效阈值为 0，按本地意图从已验证语料随机回退并排除近期重复
-  -> 独立相关性覆盖阈值（默认 0.05；非直出证据模式零匹配仍拒答）
-  -> 类型化 Prompt -> provider-neutral async LLM
-  -> 输出边界校验（最多重试一次）
-  -> 只允许受控地 @当前请求用户；语料中的其他 mention 全部转义
+收到指定頻道的訊息
+  → 檢查使用範圍、頻率與可用額度
+  → 找出目前人物及這次對話使用的版本
+  → 比對已核實資料
+  → 依模式回傳原話、生成回答或說明不知道
+  → 檢查回覆，避免不受控地提及其他人
 ```
 
-Discord 适配器位于 `bot/`，领域服务、仓储、校验器和 LLM 客户端位于 `app/`。内部主键使用 UUID，Discord snowflake 以字符串保存。SQLite 适用于本地和小型单实例部署，仓储与 async SQLAlchemy 设计可迁移到 PostgreSQL。
+一般使用者不需要修改程式。維護者若要查閱實作：Discord 收發位於 `bot/`，人物、資料與模型處理位於 `app/`。不同回答模式的資料門檻不同；不要把測試模式當成正式安全驗收。
 
-## Discord 命令
+## 使用方法
 
-普通用户：
+日常使用：
 
 - `/chat message:<text> private:<bool=false> evidence:<bool=false>`
 - `/chat-reset`
+- `/chat-erase`
 - `/chat-settings`
 - `/persona-info`
 - `/help`
 
-Owner / 管理：
+建立者用：
 
 - `/persona create|list|select|show|clone-version|publish|activate|rollback|export`
 - `/utterance add|import|list|show|verify|unverify|edit|delete|analyze`
@@ -42,37 +76,31 @@ Owner / 管理：
 - `/personality show|edit`
 - `/address add|list|edit|delete`
 - `/bot-status`
-- `/bot-sync-commands scope:<test-guild|global>`
+- `/bot-sync-commands`（只同步到指定伺服器）
 - `/bot-reload-persona`
 - `/bot-db-status`
 
-人物创建、发布、语料导入/导出、全局命令同步和诊断是 Owner-only。服务器管理员只能选择已发布人物；普通用户只能对话、重置自己的会话、设置安全范围内的个人语气覆盖和查看披露/证据。所有权限均由命令检查器执行，不依赖隐藏 UI。
+管理指令只供設定中的建立者使用。伺服器管理員不會因此自動取得人物管理權限。一般使用者可聊天、重新聊天、刪除自己的本地會話、調整個人語氣及查看人物資料。
 
-## Discord Developer Portal 设置
+`/chat-reset` 保留舊記錄；`/chat-erase` 才會刪除指定伺服器與頻道中自己的本地會話。它不會刪除 Discord 原訊息、人物資料或短期安全額度。詳細範圍見 [私隱說明](PRIVACY.md)。
 
-1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 创建 Application，并在 **Bot** 页面添加机器人。
-2. 重置并复制 Token，只把它保存在部署主机未提交的 `.env` 中。不要把 Token 发到聊天、命令行参数、镜像或 Git。
-3. 默认保持 **Message Content Intent** 关闭。MVP 不需要 **Server Members Intent** 或 **Presence Intent**。
-4. 在 **OAuth2 > URL Generator** 选择 `bot` 和 `applications.commands` scopes。
-5. 只授予：View Channels、Send Messages、Send Messages in Threads（需要线程时）、Read Message History、Embed Links、Attach Files（仅导入/导出需要）。不要授予 Administrator。
-6. 将 Application ID、测试服务器 ID、Owner 用户 ID 写入本机 `.env`。测试服务器同步近乎立即；发布时由 Owner 显式执行 `/bot-sync-commands scope:global`。
+## 機器設定
 
-默认 Intents：`guilds=true`、`guild_messages=true`、`dm_messages=true`，`message_content=false`、`members=false`、`presences=false`。Discord 会在私信和明确提及机器人的消息中提供必要内容，因此默认模式不读取服务器全部普通消息。
+1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 建立自己的應用程式，進入 **Bot** 頁面設定機器人。
+2. 私下保存 Bot Token。它相當於機器人的密碼，不要傳到聊天、截圖或 GitHub。
+3. 在 **Bot > Privileged Gateway Intents** 開啟 **Message Content Intent**，讓機器人能讀取有權查看的普通訊息。不要開啟不需要的成員或上線狀態讀取權限。
+4. 在 **OAuth2 > URL Generator** 選擇 `bot` 和 `applications.commands`，產生邀請連結。
+5. 只允許查看頻道、發送訊息、讀取歷史及嵌入連結。需要傳送檔案時才另開附件權限。不要授予 **Administrator**，也要檢查頻道是否額外給了管理權限。
+6. 設定自己的伺服器、聊天頻道及建立者使用者 ID。只在獨立測試伺服器完成檢查後，才安排正式使用。
 
-如确需专用频道自动回复，必须同时完成以下三项：
+`DISCORD_GUILD_ID`、`DISCORD_CHAT_CHANNEL_ID` 和 `DISCORD_OWNER_USER_IDS` 必須填寫。程式內也要設定 `DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=true`；只在網站開啟並不足夠。缺少必要設定會停止啟動；連線後還會核對伺服器、文字頻道與可用人物。
 
-1. Developer Portal 启用 Message Content Intent；
-2. 设置 `DISCORD_ENABLE_MESSAGE_CONTENT_INTENT=true`；
-3. 在 `DISCORD_AUTO_REPLY_CHANNEL_IDS` 写入明确的频道 ID 白名单。
+## 開始安裝
 
-即使开关已启用，非白名单普通消息仍会被忽略；机器人消息和 webhook 消息始终被忽略。`DISCORD_ALLOWED_GUILD_IDS` 可进一步限制允许使用机器人的服务器；留空表示不额外限制服务器。
-
-## 本地安装与运行（Windows）
-
-项目要求 Python 3.11+。以下 PowerShell 示例把虚拟环境、临时目录、字节码和工具缓存全部放在项目的 D 盘目录：
+以下是 Windows 維護者的本機安裝方式，需要 Python 3.11。請先開啟 PowerShell，進入你自己的專案資料夾。安裝路徑可自行選擇，以下不限定磁碟代號。
 
 ```powershell
-Set-Location 'D:\项目\PythonProject1\discord-persona-bot'
+Set-Location '<你的專案資料夾>'
 New-Item -ItemType Directory -Force .cache\temp,.cache\pip,.cache\pycache | Out-Null
 $env:TEMP = "$PWD\.cache\temp"
 $env:TMP = "$PWD\.cache\temp"
@@ -83,16 +111,20 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-只在本机私下编辑 `.env`。最少需要 `DISCORD_BOT_TOKEN`、`DISCORD_APPLICATION_ID`、`DISCORD_TEST_GUILD_ID` 和 `DISCORD_OWNER_USER_IDS`。不要提交 `.env`。
+只在本機編輯 `.env`，不要上傳。至少填寫 `DISCORD_GUILD_ID`、`DISCORD_CHAT_CHANNEL_ID`、`DISCORD_OWNER_USER_IDS`，並開啟 `DISCORD_ENABLE_MESSAGE_CONTENT_INTENT`。
+
+密鑰建議另存私密檔案，再用 `DISCORD_BOT_TOKEN_FILE` 指向它；不要同時設定 `DISCORD_BOT_TOKEN`。要測試發行安全設定，請使用 `compose.release.yml`，不要把本機開發設定當成發行驗收。
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
 .\.venv\Scripts\python.exe -m bot.main
 ```
 
-默认 `LLM_PROVIDER=fake` 不产生付费调用。使用 OpenAI-compatible 提供商时才设置 `LLM_PROVIDER=openai_compatible`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`；密钥只通过环境变量读取。
+預設 `LLM_PROVIDER=fake` 只供測試，不會呼叫真實模型。接入相容的模型服務時，才設定 `LLM_PROVIDER=openai_compatible`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。服務密鑰只留在本機私密設定。
 
-无 Token 的完整本地启动冒烟：
+發行安全模式還需要有限的回答長度及已核實的費用上限。詳見 `config.example.env`；即使是付費服務，也要在服務商網站另設使用額度。
+
+只想檢查本機能否初始化，可使用不連線的測試：
 
 ```powershell
 $env:BOT_SMOKE_TEST_MODE = 'true'
@@ -100,50 +132,56 @@ $env:DATABASE_URL = 'sqlite+aiosqlite:///./.cache/readme-smoke.sqlite3'
 .\.venv\Scripts\python.exe -m bot.main
 ```
 
-成功时输出 `DISCORD_READY_SMOKE=true` 和注册的顶级命令数，不连接 Discord，也不调用外部 LLM。
+看到 `DISCORD_READY_SMOKE=true` 只代表本機初始化成功，不代表已連上 Discord。此方式不需要 Token，也不呼叫外部模型。完成後關閉這個 PowerShell 視窗，避免下一次仍沿用測試設定。
 
-## 人物和语料工作流
+## 建立人物
 
-推荐在 Discord 内完成：创建人物 -> 向草稿添加/导入授权言论 -> 预览 -> 明确核验 -> `/utterance analyze` 查看未发布建议 -> 发布。人物发布新版本后，已有会话和新会话都会自动跟随当前活动版本；`/chat-reset` 只结束调用者当前会话。
+建議順序：建立人物 → 加入獲准資料 → 查看預覽 → 核實內容 → 發布。
 
-需要把历史版本统一归口时，先备份数据库，再运行原子化合并脚本。以下命令会从 `0.2.0` 完整复制语料、规则和人物配置到已发布的 `0.3.0`，验证语料数量及已核验语料，重定向全部会话，最后删除 `0.1.0` 和 `0.2.0`；任一步失败都会回滚事务：
+`/utterance analyze` 只提供建議，不會自行改寫或發布人物。每次對話使用建立時的人物版本；發布新版不會偷偷更換舊對話。需要重新開始時，使用 `/chat-reset`。
+
+以下是進階維護操作，不是一般安裝步驟。請先備份，並在測試資料庫確認版本符合你的情況。
+
+合併腳本會把 `0.2.0` 的資料與設定複製到 `0.3.0`，重新指向會話，最後刪除 `0.1.0` 和 `0.2.0`。操作失敗會撤回該次資料變更；不要未經確認就對正式資料執行：
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\consolidate_persona_versions.py --persona-name "<PERSONA_NAME>"
 ```
 
-`/utterance import` 只接受 UTF-8 `.jsonl` 或 `.txt`，并执行配置的字节数、行数、MIME/扩展名和重复检查。默认导入为未核验，只有 Owner 显式选择 `verify=true` 才核验。附件读取后不持久保存。
+`/utterance import` 接受 UTF-8 的 `.jsonl` 或 `.txt`，會檢查檔案類型、大小、行數與重複內容。先預覽，再確認加入；預設為待核實，只有建立者明確選擇 `verify=true` 才標記為已核實。原附件不另行長期保存。
 
-JSONL 每行可以包含：
+**目前提醒：** 合成 TXT 的預覽、確認匯入及待核實狀態已通過真人重測；其他檔案類型與完整安全驗收尚未完成。不要以正式人物資料試錯，也不要把單項通過當成可正式發布。
+
+使用 `.jsonl` 時，每行可填寫以下內容：
 
 ```json
-{"text":"授权言论","context":"上下文","topic":"主题","scene":"场景","verified":false}
+{"text":"獲准使用的文字","context":"前後文","topic":"主題","scene":"情境","verified":false}
 ```
 
-也可在明确指向开发数据库后使用离线脚本：
+維護者也可在明確指定測試資料庫後，使用本機匯入工具：
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.seed_demo_persona
 .\.venv\Scripts\python.exe -m scripts.import_utterances .\authorized.jsonl --persona-id <UUID> --version-id <UUID>
 ```
 
-第二条命令默认不核验；只有确认来源授权后才添加 `--verify`。脚本会修改所配置的数据库，切勿指向生产数据库做试验。
+第二條指令預設不標記為已核實；確認來源和內容後才加上 `--verify`。這些工具會修改設定中的資料庫，不要拿正式資料測試。建立演示人物前，先完成上方資料庫更新指令。
 
-需要在完全保留活动版本语料的前提下追加 UTF-8 TXT 时，先备份数据库，再使用版本化追加脚本。它会克隆活动版本、跳过完全相同的重复行、把新行标记为已核验、发布目标版本并重定向既有会话；任一步失败都会回滚：
+追加工具會複製目前版本、保留原資料並跳過完全重複的行。注意：它會把新增內容直接標記為已核實、發布新版並更新既有會話。請先自行核實 TXT 全部內容並備份；失敗時會撤回該次資料變更：
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\append_persona_corpus.py .\append.txt --persona-name "<PERSONA_NAME>" --target-version 0.4.0
 ```
 
-需要按明确要求替换一条已发布语料时，使用版本化替换脚本。它要求移除片段在活动版本中只命中一条，克隆活动版本后只修改目标版本中的该条文本，并发布新版本；零命中、多命中或目标文本重复都会整体回滚：
+替換工具會複製目前版本，只修改符合條件的一筆文字，再發布新版。找不到、找到多筆或造成重複時，會撤回該次資料變更。請先備份並確認替換內容：
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\replace_persona_corpus.py --persona-name "<PERSONA_NAME>" --target-version 0.5.0 --remove-fragment "<TEXT_FRAGMENT>" --replacement-text "<REPLACEMENT_TEXT>"
 ```
 
-## 数据库和迁移
+## 資料管理
 
-默认数据库为 `data/persona_bot.db`。启动容器前会自动执行 `alembic upgrade head`；非容器部署应手动运行同一命令。主要表：
+預設資料檔為 `data/persona_bot.db`。容器啟動前會執行 `alembic upgrade head`；本機安裝則需自行執行。以下資料表名稱只供維護者查閱：
 
 - `personas`、`persona_versions`
 - `utterances`、`vocabulary_rules`、`catchphrase_rules`、`address_rules`
@@ -151,11 +189,13 @@ JSONL 每行可以包含：
 - `discord_conversations`、`discord_message_records`
 - `guild_configs`
 
-只存储有限消息历史（`MAX_HISTORY_MESSAGES`），保留期由 `CONVERSATION_RETENTION_DAYS` 配置。不会从聊天记录自动训练、抽取或发布人物规则。
+對話歷史長度可用 `MAX_CONVERSATION_MESSAGES` 設定。發行安全模式以 `SECURITY_RETENTION_DAYS` 控制保留日數，預設 7 天，上限 30 天；不是無限保存。聊天記錄不會自動變成人物規則。
 
-## 测试和质量门禁
+備份前先停止機器人。還原時先使用獨立測試位置；舊備份可能帶回已刪除的會話。備份與刪除例外見 [私隱說明](PRIVACY.md)，不要承諾能清除 Discord 或未知備份中的資料。
 
-所有 Discord 网络和 LLM 调用在测试中使用替身；测试不会使用真实 Token 或付费 Key。
+## 上線檢查
+
+以下自動檢查不使用真實 Discord Token 或付費密鑰，不能代替真人在測試伺服器操作驗收：
 
 ```powershell
 .\.venv\Scripts\ruff.exe format --check .
@@ -163,57 +203,67 @@ JSONL 每行可以包含：
 .\.venv\Scripts\pytest.exe -q
 ```
 
-工具缓存路径已经在 `pyproject.toml` 固定到 `.cache/`。运行前仍建议设置上面的 D 盘 `TEMP`、`TMP`、`PIP_CACHE_DIR` 和 `PYTHONPYCACHEPREFIX`。
+檢查工具使用專案內的 `.cache/`。執行前可沿用安裝段落的暫存設定。更新後先通過檢查，再安排測試；本專案目前仍未完成全部安全驗收。
 
-## Docker
+## 容器安裝
 
-无 Token、无付费 Key 的构建和冒烟：
+以下為開發用的建置與本機初始化檢查，不是正式發行啟動方式：
 
 ```powershell
 docker build -t discord-persona-bot:local .
 docker run --rm -e BOT_SMOKE_TEST_MODE=true -e DATABASE_URL=sqlite+aiosqlite:///./data/smoke.db discord-persona-bot:local
 ```
 
-正式运行前在部署主机创建未提交的 `.env`，然后：
+要檢查發行安全設定，使用 `compose.release.yml`。先複製 `config.example.env` 為 `config.env`，填寫自己的設定；把 Token 私下保存為 `.secrets/discord_bot_token`，只允許自己的帳號讀取。不要同時在設定內填寫 `DISCORD_BOT_TOKEN`。
+
+完成獨立測試設定後，先檢查設定，再更新資料庫與建立合成演示人物，最後啟動：
 
 ```powershell
-docker compose up -d --build
-docker compose logs -f discord-persona-bot
+docker compose -f compose.release.yml config --quiet
+docker compose -f compose.release.yml build
+docker compose -f compose.release.yml run --rm bot python -m scripts.seed_demo_persona
+docker compose -f compose.release.yml up --no-build -d
+docker compose -f compose.release.yml logs -f bot
 ```
 
-镜像使用非 root 用户，`/app/data` 由命名卷持久化，启动入口先运行迁移，Compose 使用 `unless-stopped` 和 20 秒优雅停止窗口。容器 healthcheck 验证数据库连通性；日志中的 `Discord gateway ready` 表示真实 Discord Gateway 已就绪。
+演示人物只含合成文字。上方指令會在設定的資料庫寫入資料，只能對自己的測試環境執行；不要與正式環境共用設定或資料儲存位置。
 
-Windows Docker Desktop 与普通 Linux Docker 主机均可使用上述 Compose。小型常开家用服务器/软路由仅建议在支持 64 位 Docker、可持久化卷、稳定 TLS/DNS 且至少约 256–512 MB 可用内存时运行；不要把路由管理界面或 Bot 端口暴露到公网。SQLite 只适合单容器实例，多实例应迁移到 PostgreSQL。
+發行設定以受限帳號執行、程式檔案唯讀，只有資料目錄可保存變更。健康檢查只確認資料庫可用；看到 `Bot ready discord_ready=true` 才代表該次 Discord 連線完成就緒。
 
-## 配置项
+Windows 可使用 Docker Desktop 的 Linux 容器模式。其他主機需要自行驗證相容性、可用空間及網絡；不要把本機測試成功當成另一台主機也通過。預設資料庫適合單一執行個體，不要讓多個機器人同時共用寫入。不要公開路由器管理頁或不必要的連接埠。
 
-完整模板见 `.env.example`。常用安全/资源选项：
+## 基本設定
+
+本機開發模板見 `.env.example`；發行設定模板見 `config.example.env`。以下名稱需原樣填寫，不能改成中文：
 
 - `MAX_IMPORT_BYTES`、`MAX_IMPORT_LINES`
-- `MAX_HISTORY_MESSAGES`、`CHAT_RECENT_UTTERANCE_WINDOW`、`CONVERSATION_RETENTION_DAYS`
-- `USER_COOLDOWN_SECONDS`：按 Discord 用户独立限速，不会让同服其他用户互相阻塞
-- `GUILD_COOLDOWN_SECONDS`：兼容旧配置保留，当前不再作为服务器全局拒绝桶
-- `MAX_CONCURRENT_CHAT_REQUESTS`：总请求处理并发数，超出部分排队而不是拒绝，默认 8
+- `MAX_CONVERSATION_MESSAGES`、`CHAT_RECENT_UTTERANCE_WINDOW`、`CONVERSATION_RETENTION_DAYS`
+- `USER_CHAT_COOLDOWN_SECONDS`：同一使用者兩次聊天的等待時間。
+- `MENTION_REDIRECT_COOLDOWN_SECONDS`：其他頻道導航提示的等待時間。
+- `GUILD_COOLDOWN_SECONDS`：保留舊設定相容性，不作全伺服器共用拒絕限制。
+- `MAX_CONCURRENT_CHAT_REQUESTS`：同時處理數量；還受等候數量與額度限制，不保證每筆都接受。
+- `MAX_PENDING_CHAT_REQUESTS`：限制等候處理數量，避免無限累積。
 - `MAX_CONCURRENT_LLM_CALLS`
 - `DISCORD_SYNC_COMMANDS_ON_STARTUP`
 - `BOT_SMOKE_TEST_MODE`
 
-## 已知限制
+## 使用限制
 
-- 当前 Hybrid Retrieval 完全在本地运行，融合 BM25、连续短语、中文 n-gram、场景元数据和近期重复降权；没有启用外部向量嵌入，因此纯同义改写覆盖能力仍有限，但检索排名不能绕过证据阈值。
-- 本地自动测试和 smoke mode 不验证真实 Discord Token、Gateway 连通性、Portal 配置或全局命令传播；这些必须在测试服务器人工验收。
-- Fake LLM 只用于确定性开发/测试，不代表外部模型质量。
-- SQLite 面向单实例小规模部署，不支持横向多副本写入。
-- 容器 healthcheck 证明进程可访问数据库；真实 Discord 就绪状态以结构化日志 `Discord gateway ready` 为准。
-- 语言分析只生成建议，当前版本不会一键把建议自动写入/发布为规则。
+- 只換同義字、不使用原文關鍵字時，仍可能找不到合適資料。
+- 本機測試不能確認 Discord 權限、登入、實際回覆或另一台主機的狀況。
+- 預設測試回答不代表真實模型的品質或安全表現。
+- 等候數量或額度用完時，部分請求會被拒絕；不會無限排隊。
+- 人物分析只給建議，不會自行發布。
+- 預錄音訊預設關閉；發行版不提供語音頻道播放或語音輸入。
+- 完整安全驗收仍未完成，詳見 [驗收狀態](release/customer/驗收狀態.md)。
 
-## 隐私与授权
+## 私隱保護
 
-只导入你有权使用的材料，并在发布前逐条核验。不得导入秘密、私人事实或未经授权的聊天记录。机器人必须始终以 AI 风格模拟身份出现，不能冒充真人，也不能声称输出代表真人当前观点。
+只加入你有權使用的內容，發布前逐條核實。不要加入秘密、私人資料或未獲准的聊天記錄。機器人必須保留 AI 身份說明，不能冒充本人，也不能宣稱回覆是本人的立場。
 
-Git 仓库只保存通用源码、迁移、测试和空白配置模板。真实人物语料、原始录音、生成音频、SQLite 数据库、备份、日志、Discord Token、LLM API Key、Voice ID、SSH 密钥及生产 `.env` 必须保存在仓库外，并通过 `.gitignore` 与 `.dockerignore` 双重排除。即使使用 GitHub 私人仓库，也不得提交这些材料。
+GitHub 只放通用程式、測試與空白設定模板。真實人物文字、錄音、產生的音訊、資料庫、備份、記錄、Bot Token、模型密鑰及 Voice ID 都要留在專案之外。使用 `.gitignore` 與 `.dockerignore` 排除，發布前仍要另行檢查；私人儲存庫也不能當成密鑰保險箱。
 
-预录音频功能默认关闭。启用时将经授权的音频保存在部署主机的私有持久目录，并以只读方式挂载到容器：
+預錄音訊預設關閉，而且發行設定固定關閉。需要啟用時，應另行設定及驗收；把獲准音訊放在主機私密目錄，只允許容器讀取，不加入發布檔案。相關設定名稱如下，不代表只填這三行就完成啟用：
 
 ```env
 VOICE_ASSET_FEATURE_ENABLED=true
@@ -221,4 +271,4 @@ VOICE_ASSET_ROOT=/app/private/voice-assets
 VOICE_BUTTON_TIMEOUT_SECONDS=300
 ```
 
-Discord 回复只为当前 `DIRECT_UTTERANCE` 映射提供“聼語音”按钮；音频作为仅请求用户可见的附件发送，不加入 Docker 镜像，不进入 Git，也不需要 Voice Channel、FFmpeg、PyNaCl、Connect 或 Speak 权限。
+只有回覆對應到已綁定的原話音訊時，才可提供「聼語音」按鈕。附件可見範圍、公開按鈕及過期行為需依啟用設定另行驗收，不承諾音訊永久有效。傳送預錄附件不需要加入語音頻道；人物音訊不得加入 Git 或容器映像。

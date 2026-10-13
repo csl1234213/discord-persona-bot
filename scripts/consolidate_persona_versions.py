@@ -3,6 +3,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.session import build_engine, build_sessionmaker
 from app.services.persona_version_consolidation_service import (
@@ -30,6 +31,7 @@ async def run(args: argparse.Namespace) -> None:
     session_factory = build_sessionmaker(engine)
     try:
         async with session_factory() as session:
+            grant_local_admin(session)
             report = await PersonaVersionConsolidationService(session).consolidate(
                 persona_name=args.persona_name,
                 source_version=args.source_version,

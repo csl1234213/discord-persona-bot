@@ -3,6 +3,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.session import build_engine, build_sessionmaker
 from app.services.persona_corpus_replace_service import PersonaCorpusReplaceService
@@ -28,6 +29,7 @@ async def run(args: argparse.Namespace) -> None:
     session_factory = build_sessionmaker(engine)
     try:
         async with session_factory() as session:
+            grant_local_admin(session)
             report = await PersonaCorpusReplaceService(session).replace_utterance_containing(
                 persona_name=args.persona_name,
                 target_version=args.target_version,

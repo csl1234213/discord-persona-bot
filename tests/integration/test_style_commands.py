@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 
+from app.core.config import Settings
 from app.db.models import AddressRule, StyleProfile
 from app.repositories.utterance_repository import UtteranceRepository
 from app.schemas.persona import PersonaCreate, UtteranceCreate
@@ -20,6 +21,12 @@ from bot.views.personality_view import PersonalityView
 def interaction():
     return SimpleNamespace(
         guild_id=10,
+        channel_id=20,
+        client=SimpleNamespace(
+            settings=Settings(
+                discord_owner_user_ids="1", discord_guild_id="10", discord_chat_channel_id="20"
+            )
+        ),
         user=SimpleNamespace(id=1),
         response=SimpleNamespace(send_message=AsyncMock(), send_modal=AsyncMock()),
     )
@@ -44,7 +51,7 @@ async def test_style_personality_address_and_utterance_modal_commands(db_session
     await style_cog.style_edit.callback(style_cog, current, str(persona.id), str(version.id))
     style_modal = current.response.send_modal.await_args.args[0]
     assert isinstance(style_modal, StyleModal)
-    save_interaction = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+    save_interaction = interaction()
     await style_modal.on_submit_callback(
         save_interaction,
         {

@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.errors import AppError
 from app.db.models import DiscordConversation, Persona, PersonaVersion, Utterance
 from app.services.persona_update_service import PersonaUpdateService
@@ -127,6 +128,7 @@ class NumberedCorpusImportService:
             planned_database_changes=0 if already_applied else len(blocks) + 1,
         )
 
+    @admin_required
     async def apply(
         self,
         *,

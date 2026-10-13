@@ -25,12 +25,15 @@ test = [
   "pytest-cov>=5,<7",
   "ruff>=0.8,<1",
 ]
+benchmark = [
+  "psutil>=7,<8",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "bot"]
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers --cov=app.services --cov=app.validators --cov=bot --cov-report=term-missing --cov-fail-under=85"
+addopts = "--strict-markers --basetemp=.cache/pytest-temp --cov=app.services --cov=app.validators --cov=bot --cov-report=term-missing --cov-fail-under=85"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -51,6 +54,3 @@ cache-dir = ".cache/ruff"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC"]
 ignore = ["B008"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/conftest.py" = ["ASYNC240"]

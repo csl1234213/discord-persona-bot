@@ -1,0 +1,36 @@
+name: persona-security-audit
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.release
+    image: persona-security-audit:local
+    user: "10001:10001"
+    environment:
+      BOT_SMOKE_TEST_MODE: "true"
+      RELEASE_SECURITY_MODE: "true"
+      LLM_PROVIDER: fake
+      LLM_MAX_TOKENS: "128"
+      DISCORD_SYNC_COMMANDS_ON_STARTUP: "false"
+      DATABASE_URL: sqlite+aiosqlite:////app/data/audit.db
+      DISCORD_GUILD_ID: "100"
+      DISCORD_CHAT_CHANNEL_ID: "200"
+      DISCORD_OWNER_USER_IDS: "300"
+    entrypoint: ["python", "scripts/offline_security_smoke.py"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 20s
+    restart: "no"
+    network_mode: none
+    volumes: ["audit-data:/app/data"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  audit-data:

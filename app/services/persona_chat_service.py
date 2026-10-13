@@ -3,8 +3,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import require_actor
 from app.core.config import Settings
 from app.core.errors import AppError
 from app.db.models import (
@@ -15,6 +18,7 @@ from app.db.models import (
     PersonalityProfile,
     PersonaVersion,
     StyleProfile,
+    Utterance,
 )
 from app.llm.base import LLMClient
 from app.repositories.conversation_repository import ConversationRepository
@@ -28,16 +32,25 @@ from app.schemas.chat import (
     EvidenceItem,
     HistoryMessage,
     SelectionContext,
+    SelectionResult,
 )
+from app.services.abrasive_style_policy import AbrasiveStylePolicy
+from app.services.conversation_lock_manager import ConversationLockManager
+from app.services.direct_utterance_gate import DirectUtteranceGate
 from app.services.discord_context_resolver import DiscordContextResolver
 from app.services.personality_resolver import TRAITS as PERSONALITY_TRAITS
 from app.services.personality_resolver import PersonalityResolver
+from app.services.political_corpus_retriever import PoliticalCorpusRetriever
+from app.services.political_topic_router import PoliticalDecision, PoliticalTopicRouter
+from app.services.privacy_service import PrivacyService
 from app.services.prompt_builder import PromptBuilder
+from app.services.resource_quota_service import ResourceQuotaService
 from app.services.utterance_selector import LexicalUtteranceSelector
 from app.validators.boundary_validator import BoundaryValidator
 
 logger = logging.getLogger(__name__)
-BOUNDARY_RESPONSE = "现有言论不足以判断这个人会怎样回应这个问题。"
+BOUNDARY_RESPONSE = "唔知喎。"
+POLITICAL_FALLBACK_RESPONSE = "冇相符嘅原話，唔亂講。"
 
 
 class PersonaChatService:
@@ -47,14 +60,18 @@ class PersonaChatService:
         llm_client: LLMClient,
         settings: Settings,
         semaphore: asyncio.Semaphore,
+        conversation_locks: ConversationLockManager | None = None,
     ) -> None:
         self.db = db
         self.llm_client = llm_client
         self.settings = settings
         self.semaphore = semaphore
+        self.conversation_locks = conversation_locks or ConversationLockManager()
         self.conversations = ConversationRepository(db)
 
     async def _active_persona(self, guild_id: str | None) -> tuple[Persona, GuildConfig | None]:
+        if self.settings.release_security_mode and guild_id != self.settings.discord_guild_id:
+            raise AppError("forbidden", "Persona scope is not authorized.")
         guild_config = await GuildRepository(self.db).get(guild_id) if guild_id else None
         persona = (
             await PersonaRepository(self.db).get(guild_config.selected_persona_id)
@@ -71,14 +88,12 @@ class PersonaChatService:
     async def _conversation(self, persona: Persona, context: DiscordContext) -> DiscordConversation:
         conversation = await self.conversations.find_active(
             persona_id=persona.id,
+            persona_version_id=persona.active_version_id,
             guild_id=context.guild_id,
             channel_id=context.channel_id,
             discord_user_id=context.discord_user_id,
         )
         if conversation:
-            if conversation.persona_version_id != persona.active_version_id:
-                conversation.persona_version_id = persona.active_version_id
-                await self.db.flush()
             return conversation
         conversation = DiscordConversation(
             persona_id=persona.id,
@@ -95,6 +110,36 @@ class PersonaChatService:
         return await self.conversations.add(conversation)
 
     async def chat(self, message: str, context: DiscordContext) -> ChatResult:
+        self._guard_context(context)
+        if not message.strip() or len(message) > self.settings.max_chat_input_chars:
+            raise AppError("invalid_input", "Message is empty or exceeds the input limit.")
+        try:
+            message.encode("utf-8", errors="strict")
+        except UnicodeError:
+            raise AppError("invalid_input", "Message contains invalid Unicode.") from None
+        key = (context.guild_id, context.channel_id, context.discord_user_id)
+        try:
+            async with self.conversation_locks.hold(key):
+                return await self._chat_locked(message, context)
+        except (SQLAlchemyError, OSError, TimeoutError):
+            await self.db.rollback()
+            raise AppError(
+                "request_unavailable", "Storage or model temporarily unavailable."
+            ) from None
+
+    async def _chat_locked(self, message: str, context: DiscordContext) -> ChatResult:
+        if context.discord_message_id is not None:
+            existing = await self.db.scalar(
+                select(DiscordMessageRecord.id)
+                .where(DiscordMessageRecord.discord_message_id == context.discord_message_id)
+                .limit(1)
+            )
+            if existing is not None:
+                raise AppError("duplicate_event", "Duplicate request ignored.")
+        if self.settings.release_security_mode:
+            await self.db.commit()
+            await ResourceQuotaService(self.db, self.settings).reserve(context, requests=1)
+            await PrivacyService(self.db, self.settings).check_capacity()
         persona, guild_config = await self._active_persona(context.guild_id)
         conversation = await self._conversation(persona, context)
         version = await self.db.get(PersonaVersion, conversation.persona_version_id)
@@ -130,21 +175,38 @@ class PersonaChatService:
             )
         )
         await self.db.flush()
-        selection = await LexicalUtteranceSelector(UtteranceRepository(self.db)).select(
-            message=message,
-            persona_version_id=version.id,
-            context=SelectionContext(
-                guild_id=context.guild_id,
-                discord_user_id=context.discord_user_id,
-                role_ids=context.role_ids,
-                relationship=context.relationship,
-                audience_type=context.audience_type,
-            ),
-            limit=5,
-            recent_utterance_ids=recent_utterance_ids,
-            minimum_score=persona.coverage_threshold,
-            allow_intent_fallback=self.settings.chat_direct_utterance_mode,
+        selection_context = SelectionContext(
+            guild_id=context.guild_id,
+            discord_user_id=context.discord_user_id,
+            role_ids=context.role_ids,
+            relationship=context.relationship,
+            audience_type=context.audience_type,
         )
+        selector = LexicalUtteranceSelector(UtteranceRepository(self.db))
+        router = PoliticalTopicRouter()
+        political_decision = router.route(message, history)
+        if not self.settings.political_restrictions_enabled:
+            political_decision = PoliticalDecision(
+                is_political=False,
+                reason_codes=("POLITICAL_RESTRICTIONS_DISABLED",),
+            )
+        selection_failed = False
+        try:
+            selection = await selector.select(
+                message=message,
+                persona_version_id=version.id,
+                context=selection_context,
+                limit=5,
+                recent_utterance_ids=recent_utterance_ids,
+                minimum_score=0.0,
+                allow_intent_fallback=False,
+            )
+        except Exception:
+            if not political_decision.is_political:
+                raise
+            logger.exception("Political selector failed closed")
+            selection_failed = True
+            selection = SelectionResult(items=[], coverage_score=0.0)
         rules = RuleRepository(self.db)
         address_rules = await rules.addresses(version.id)
         address, address_source = DiscordContextResolver().resolve_address(
@@ -173,91 +235,27 @@ class PersonaChatService:
             "personality_sources": personality.sources,
             "selector_reason_codes": [item.reason_codes for item in selection.items],
             "recent_utterance_count": len(recent_utterance_ids),
+            "political_route": political_decision.is_political,
+            "political_reason_codes": list(political_decision.reason_codes),
+            "political_selection_failed_closed": selection_failed,
         }
-        intent_fallback = bool(
-            selection.items and "intent_random_fallback" in selection.items[0].reason_codes
-        )
-        if intent_fallback:
-            debug["selection_mode"] = "intent_random_fallback"
-            debug["effective_coverage_threshold"] = 0.0
-        if not selection.items or (
-            not intent_fallback and selection.coverage_score < persona.coverage_threshold
-        ):
-            await self._save_answer(conversation, BOUNDARY_RESPONSE, [], "insufficient_evidence")
-            return self._result(
-                conversation,
-                persona,
-                version,
-                BOUNDARY_RESPONSE,
-                "insufficient_evidence",
-                selection.coverage_score,
-                address,
-                evidence,
-                personality,
-                "SAFE_FALLBACK",
-                None,
-                debug,
-            )
-
         if self.settings.chat_direct_utterance_mode:
-            selected = selection.items[0]
-            answer = selected.text.strip()
-            debug["response_mode"] = "direct_utterance"
-            await self._save_answer(
-                conversation,
-                answer,
-                [str(selected.utterance_id)],
-                "supported",
+            direct = DirectUtteranceGate(router).decide(
+                message, selection.items, political_decision
             )
-            return self._result(
-                conversation,
-                persona,
-                version,
-                answer,
-                "supported",
-                selection.coverage_score,
-                address,
-                evidence,
-                personality,
-                "DIRECT_UTTERANCE",
-                selected.utterance_id,
-                debug,
-            )
-
-        style = await self.db.get(StyleProfile, version.id)
-        if style is None:
-            raise AppError("style_missing", "Persona style profile is missing.")
-        catchphrases = await rules.catchphrases(version.id)
-        vocabulary = await rules.vocabulary(version.id)
-        request = PromptBuilder().build(
-            disclosure=persona.disclosure,
-            style=style,
-            personality=personality,
-            resolved_address=address,
-            relationship=context.relationship,
-            evidence=selection.items,
-            history=history,
-            user_message=message,
-            catchphrases=catchphrases,
-        )
-        validator = BoundaryValidator()
-        conversation_text = "\n".join(item.content for item in previous if item.role == "assistant")
-        failure_reasons: list[str] = []
-        async with self.semaphore:
-            for attempt in range(2):
-                answer = await self.llm_client.generate(request)
-                validation = validator.validate(
-                    answer,
-                    persona_name=persona.display_name,
-                    vocabulary_rules=vocabulary,
-                    catchphrase_rules=catchphrases,
-                    conversation_text=conversation_text,
-                )
-                if validation.valid:
+            debug["direct_gate_reason_codes"] = list(direct.reason_codes)
+            if direct.selected is not None:
+                selected = direct.selected
+                canonical = await self._canonical_utterance(selected.utterance_id, version.id)
+                if canonical is None or canonical.text != selected.text:
+                    debug["direct_gate_reason_codes"].append("DIRECT_REJECT_CANONICAL_INTEGRITY")
+                else:
+                    answer = canonical.text
+                    debug["response_mode"] = "direct_utterance"
                     await self._save_answer(
                         conversation,
                         answer,
-                        [str(item.utterance_id) for item in selection.items],
+                        [str(canonical.id)],
                         "supported",
                     )
                     return self._result(
@@ -268,9 +266,175 @@ class PersonaChatService:
                         "supported",
                         selection.coverage_score,
                         address,
-                        evidence,
+                        [item for item in evidence if item.utterance_id == canonical.id],
                         personality,
-                        "LLM_GENERATED",
+                        "DIRECT_UTTERANCE",
+                        canonical.id,
+                        debug,
+                    )
+
+        if political_decision.is_political:
+            retrieval = None
+            if not selection_failed:
+                try:
+                    retrieval = await PoliticalCorpusRetriever(selector, router).retrieve(
+                        message=message,
+                        persona_version_id=version.id,
+                        context=selection_context,
+                        route=political_decision,
+                        recent_utterance_ids=recent_utterance_ids,
+                    )
+                except Exception:
+                    logger.exception("Political retrieval failed closed")
+            if retrieval is None:
+                debug["political_retrieval_reason_codes"] = ["POLITICAL_RETRIEVAL_ERROR_FALLBACK"]
+            else:
+                debug["political_retrieval_reason_codes"] = list(retrieval.reason_codes)
+            selected = retrieval.selected if retrieval is not None else None
+            canonical = (
+                await self._canonical_utterance(selected.utterance_id, version.id)
+                if selected is not None
+                else None
+            )
+            if selected is None or canonical is None or canonical.text != selected.text:
+                if selected is not None:
+                    debug["political_retrieval_reason_codes"].append(
+                        "POLITICAL_RETRIEVAL_CANONICAL_INTEGRITY"
+                    )
+                await self._save_answer(
+                    conversation, POLITICAL_FALLBACK_RESPONSE, [], "safe_fallback"
+                )
+                return self._result(
+                    conversation,
+                    persona,
+                    version,
+                    POLITICAL_FALLBACK_RESPONSE,
+                    "safe_fallback",
+                    selection.coverage_score,
+                    address,
+                    [],
+                    personality,
+                    "SAFE_FALLBACK",
+                    None,
+                    debug,
+                )
+            answer = canonical.text
+            await self._save_answer(
+                conversation,
+                answer,
+                [str(canonical.id)],
+                "supported",
+            )
+            return self._result(
+                conversation,
+                persona,
+                version,
+                answer,
+                "supported",
+                selection.coverage_score,
+                address,
+                [
+                    EvidenceItem(
+                        utterance_id=canonical.id,
+                        excerpt=canonical.text[:180],
+                        score=selected.score,
+                        reason_codes=selected.reason_codes,
+                    )
+                ],
+                personality,
+                "POLITICAL_CORPUS_UTTERANCE",
+                canonical.id,
+                debug,
+            )
+
+        if self.settings.release_security_mode and (
+            not selection.items or selection.coverage_score < persona.coverage_threshold
+        ):
+            await self._save_answer(conversation, BOUNDARY_RESPONSE, [], "safe_fallback")
+            return self._result(
+                conversation,
+                persona,
+                version,
+                BOUNDARY_RESPONSE,
+                "safe_fallback",
+                selection.coverage_score,
+                address,
+                [],
+                personality,
+                "SAFE_FALLBACK",
+                None,
+                debug,
+            )
+
+        style = await self.db.get(StyleProfile, version.id)
+        if style is None:
+            raise AppError("style_missing", "Persona style profile is missing.")
+        catchphrases = await rules.catchphrases(version.id)
+        vocabulary = await rules.vocabulary(version.id)
+        style_decision = AbrasiveStylePolicy(self.settings).choose(
+            conversation_id=str(conversation.id),
+            turn_key=context.discord_message_id or str(len(previous)),
+            user_message=message,
+        )
+        debug["abrasive_intensity"] = style_decision.intensity.value
+        debug["abrasive_trigger_detected"] = style_decision.trigger_detected
+        request = PromptBuilder().build(
+            disclosure=persona.disclosure,
+            style=style,
+            personality=personality,
+            resolved_address=address,
+            relationship=context.relationship,
+            evidence=selection.items,
+            history=history,
+            user_message=message,
+            catchphrases=catchphrases,
+            abrasive_intensity=style_decision.intensity.value,
+            abrasive_style_descriptor=style_decision.abstract_descriptor,
+        )
+        validator = BoundaryValidator()
+        conversation_text = "\n".join(item.content for item in previous if item.role == "assistant")
+        failure_reasons: list[str] = []
+        await self.db.commit()
+        async with self.semaphore:
+            for attempt in range(2):
+                if self.settings.release_security_mode:
+                    await ResourceQuotaService(self.db, self.settings).reserve_llm(context, request)
+                    async with asyncio.timeout(self.settings.security_request_timeout_seconds):
+                        answer = await self.llm_client.generate(request)
+                else:
+                    answer = await self.llm_client.generate(request)
+                if not isinstance(answer, str) or len(answer) > 8000:
+                    raise AppError("llm_invalid_response", "Model output exceeds the limit.")
+                validation = validator.validate(
+                    answer,
+                    persona_name=persona.display_name,
+                    vocabulary_rules=vocabulary,
+                    catchphrase_rules=catchphrases,
+                    conversation_text=conversation_text,
+                    user_message=message,
+                    response_origin="CORPUS_COMPOSED",
+                    political_decision=political_decision,
+                    abrasive_intensity=style_decision.intensity.value,
+                    abrasive_trigger_detected=style_decision.trigger_detected,
+                )
+                if validation.valid:
+                    await self._save_answer(
+                        conversation,
+                        answer,
+                        [],
+                        "supported",
+                    )
+                    return self._result(
+                        conversation,
+                        persona,
+                        version,
+                        answer,
+                        "supported",
+                        selection.coverage_score,
+                        address,
+                        [],
+                        personality,
+                        "CORPUS_COMPOSED",
                         None,
                         debug,
                     )
@@ -293,7 +457,7 @@ class PersonaChatService:
             "safe_fallback",
             selection.coverage_score,
             address,
-            evidence,
+            [],
             personality,
             "SAFE_FALLBACK",
             None,
@@ -301,9 +465,11 @@ class PersonaChatService:
         )
 
     async def reset(self, context: DiscordContext) -> int:
+        self._guard_context(context)
         persona, _ = await self._active_persona(context.guild_id)
         count = await self.conversations.reset_for_user(
             persona_id=persona.id,
+            persona_version_id=persona.active_version_id,
             guild_id=context.guild_id,
             channel_id=context.channel_id,
             discord_user_id=context.discord_user_id,
@@ -321,9 +487,11 @@ class PersonaChatService:
     async def update_personality(
         self, context: DiscordContext, values: dict[str, float]
     ) -> DiscordConversation:
+        self._guard_context(context)
         persona, _ = await self._active_persona(context.guild_id)
         conversation = await self.conversations.find_active(
             persona_id=persona.id,
+            persona_version_id=persona.active_version_id,
             guild_id=context.guild_id,
             channel_id=context.channel_id,
             discord_user_id=context.discord_user_id,
@@ -340,6 +508,18 @@ class PersonaChatService:
         await self.db.commit()
         return conversation
 
+    def _guard_context(self, context: DiscordContext) -> None:
+        if self.settings.release_security_mode and (
+            not self.settings.discord_guild_id
+            or not self.settings.discord_chat_channel_id
+            or context.guild_id != self.settings.discord_guild_id
+            or context.channel_id != self.settings.discord_chat_channel_id
+            or context.thread_id is not None
+        ):
+            raise AppError("forbidden", "Chat scope is not authorized.")
+        if self.settings.release_security_mode:
+            require_actor(self.db, context)
+
     async def _save_answer(
         self,
         conversation: DiscordConversation,
@@ -347,6 +527,12 @@ class PersonaChatService:
         evidence_ids: list[str],
         boundary_status: str,
     ) -> None:
+        if self.settings.release_security_mode:
+            existing = await self.db.scalar(
+                select(DiscordConversation.id).where(DiscordConversation.id == conversation.id)
+            )
+            if existing is None:
+                raise AppError("conversation_erased", "Conversation no longer exists.")
         conversation.last_active_at = datetime.now(UTC)
         self.db.add(
             DiscordMessageRecord(
@@ -364,6 +550,18 @@ class PersonaChatService:
             cutoff=datetime.now(UTC) - timedelta(days=self.settings.conversation_retention_days),
         )
         await self.db.commit()
+
+    async def _canonical_utterance(
+        self, utterance_id: UUID, persona_version_id: UUID
+    ) -> Utterance | None:
+        utterance = await UtteranceRepository(self.db).get(utterance_id)
+        if (
+            utterance is None
+            or not utterance.verified
+            or utterance.persona_version_id != persona_version_id
+        ):
+            return None
+        return utterance
 
     def _result(
         self,

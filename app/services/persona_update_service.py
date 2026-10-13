@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.errors import AppError
 from app.db.models import (
     AddressRule,
@@ -31,6 +32,20 @@ class PersonaUpdateService:
         self.versions = VersionRepository(db)
         self.utterances = UtteranceRepository(db)
 
+    @admin_required
+    async def select_for_guild(self, persona_id: UUID, guild_id: str):
+        from app.repositories.guild_repository import GuildRepository
+
+        if self.db.info.get("admin_guild", guild_id) != guild_id:
+            raise AppError("forbidden", "Guild ownership mismatch.")
+        persona = await self.get_persona(persona_id)
+        if persona.active_version_id is None:
+            raise AppError("version_not_published", "Published persona required.")
+        config = await GuildRepository(self.db).get_or_create(guild_id)
+        config.selected_persona_id = persona.id
+        await self.db.commit()
+
+    @admin_required
     async def create_persona(self, payload: PersonaCreate) -> tuple[Persona, PersonaVersion]:
         persona = await self.personas.add(Persona(**payload.model_dump()))
         version = await self.versions.add(
@@ -50,24 +65,28 @@ class PersonaUpdateService:
         await self.db.commit()
         return persona, version
 
+    @admin_required
     async def get_persona(self, persona_id: UUID) -> Persona:
         persona = await self.personas.get(persona_id)
         if persona is None:
             raise AppError("persona_not_found", "Persona not found.")
         return persona
 
+    @admin_required
     async def get_version(self, persona_id: UUID, version_id: UUID) -> PersonaVersion:
         version = await self.versions.get(version_id)
         if version is None or version.persona_id != persona_id:
             raise AppError("version_not_found", "Persona version not found.")
         return version
 
+    @admin_required
     async def require_draft(self, persona_id: UUID, version_id: UUID) -> PersonaVersion:
         version = await self.get_version(persona_id, version_id)
         if version.status != "draft":
             raise AppError("version_immutable", "Published versions are immutable.")
         return version
 
+    @admin_required
     async def create_draft(self, persona_id: UUID, payload: VersionCreate) -> PersonaVersion:
         persona = await self.get_persona(persona_id)
         versions = await self.versions.list_for_persona(persona_id)
@@ -117,6 +136,7 @@ class PersonaUpdateService:
             )
             self.db.add(model(persona_version_id=target_id, **values))
 
+    @admin_required
     async def add_utterance(
         self, persona_id: UUID, version_id: UUID, payload: UtteranceCreate
     ) -> Utterance:
@@ -127,6 +147,7 @@ class PersonaUpdateService:
         await self.db.commit()
         return utterance
 
+    @admin_required
     async def set_verified(
         self, persona_id: UUID, version_id: UUID, utterance_id: UUID, verified: bool
     ) -> Utterance:
@@ -138,6 +159,7 @@ class PersonaUpdateService:
         await self.db.commit()
         return utterance
 
+    @admin_required
     async def delete_utterance(
         self, persona_id: UUID, version_id: UUID, utterance_id: UUID
     ) -> None:
@@ -148,6 +170,7 @@ class PersonaUpdateService:
         await self.utterances.delete(utterance)
         await self.db.commit()
 
+    @admin_required
     async def publish(self, persona_id: UUID, version_id: UUID) -> PersonaVersion:
         persona = await self.get_persona(persona_id)
         version = await self.require_draft(persona_id, version_id)
@@ -162,6 +185,7 @@ class PersonaUpdateService:
         await self.db.commit()
         return version
 
+    @admin_required
     async def activate(self, persona_id: UUID, version_id: UUID) -> PersonaVersion:
         persona = await self.get_persona(persona_id)
         version = await self.get_version(persona_id, version_id)
@@ -171,6 +195,7 @@ class PersonaUpdateService:
         await self.db.commit()
         return version
 
+    @admin_required
     async def rollback(self, persona_id: UUID) -> PersonaVersion:
         persona = await self.get_persona(persona_id)
         published = [

@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.errors import AppError
 from app.db.models import (
     DiscordConversation,
@@ -39,6 +40,7 @@ class PersonaVersionConsolidationService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    @admin_required
     async def consolidate(
         self,
         *,

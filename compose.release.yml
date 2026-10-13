@@ -1,0 +1,38 @@
+name: persona-release
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.release
+    image: persona-release-audit:local
+    user: "10001:10001"
+    env_file:
+      - path: config.env
+        required: true
+    environment:
+      RELEASE_SECURITY_MODE: "true"
+      DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+      DATABASE_URL: sqlite+aiosqlite:////app/data/persona_bot.db
+      VOICE_ASSET_FEATURE_ENABLED: "false"
+      LLM_MAX_TOKENS: "512"
+    secrets:
+      - discord_bot_token
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 20s
+    restart: unless-stopped
+    volumes: ["persona-data:/app/data"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  persona-data:
+secrets:
+  discord_bot_token:
+    file: .secrets/discord_bot_token

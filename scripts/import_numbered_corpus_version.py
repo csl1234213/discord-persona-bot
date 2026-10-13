@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.session import build_engine, build_sessionmaker
 from app.services.numbered_corpus_import_service import NumberedCorpusImportService
@@ -37,6 +38,7 @@ async def run(args: argparse.Namespace) -> None:
     session_factory = build_sessionmaker(engine)
     try:
         async with session_factory() as session:
+            grant_local_admin(session)
             service = NumberedCorpusImportService(session)
             data = args.source_file.read_bytes()
             if args.apply:

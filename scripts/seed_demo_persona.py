@@ -3,6 +3,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.models import Persona
 from app.db.session import build_engine, build_sessionmaker, init_database
@@ -24,6 +25,7 @@ async def seed(name: str, publish: bool) -> None:
         await init_database(engine)
         sessionmaker = build_sessionmaker(engine)
         async with sessionmaker() as db:
+            grant_local_admin(db)
             existing = await db.scalar(select(Persona).where(Persona.display_name == name))
             if existing:
                 print(f"Demo persona already exists: {existing.id}")

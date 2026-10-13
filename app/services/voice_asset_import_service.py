@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.config import Settings
 from app.core.errors import AppError
 from app.db.models import Persona, PersonaVersion, Utterance, UtteranceVoiceAsset
@@ -65,6 +66,7 @@ class VoiceAssetImportService:
         self.settings = settings
         self.assets = UtteranceVoiceAssetRepository(db, settings)
 
+    @admin_required
     async def preview(
         self,
         *,
@@ -170,6 +172,7 @@ class VoiceAssetImportService:
             plans=tuple(plans),
         )
 
+    @admin_required
     async def apply(
         self,
         *,

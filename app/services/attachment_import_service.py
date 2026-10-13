@@ -39,7 +39,16 @@ class AttachmentImportService:
         verify: bool = False,
     ) -> ImportPreview:
         extension = PurePath(filename).suffix.casefold()
-        if extension not in ALLOWED_EXTENSIONS or content_type not in ALLOWED_MIME_TYPES:
+        if content_type is not None and (
+            len(content_type) > 256 or "\r" in content_type or "\n" in content_type
+        ):
+            raise ValidationFailed("Only UTF-8 .jsonl and .txt attachments are accepted.")
+        # HTTP media types are case-insensitive and may include charset parameters.
+        # The bytes are still decoded as strict UTF-8 below, regardless of the label.
+        media_type = (
+            content_type.split(";", 1)[0].strip().casefold() if content_type is not None else None
+        )
+        if extension not in ALLOWED_EXTENSIONS or media_type not in ALLOWED_MIME_TYPES:
             raise ValidationFailed("Only UTF-8 .jsonl and .txt attachments are accepted.")
         if len(data) > self.settings.max_import_bytes:
             raise ValidationFailed("Attachment exceeds the configured file-size limit.")
@@ -60,13 +69,17 @@ class AttachmentImportService:
         duplicates = 0
         for line_number, line in enumerate(lines, start=1):
             try:
+                if len(line) > 16000:
+                    raise ValueError
                 if extension == ".jsonl":
                     payload = json.loads(line)
+                    if not isinstance(payload, dict):
+                        raise ValueError
                     payload["verified"] = verify
                     item = UtteranceCreate.model_validate(payload)
                 else:
                     item = UtteranceCreate(text=line.strip(), verified=verify)
-            except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+            except (ValueError, ValidationError, TypeError, RecursionError) as exc:
                 raise ValidationFailed(f"Invalid record on line {line_number}.") from exc
             normalized = item.text.strip()
             if normalized in seen:

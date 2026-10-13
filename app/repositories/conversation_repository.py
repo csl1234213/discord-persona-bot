@@ -15,6 +15,7 @@ class ConversationRepository:
         self,
         *,
         persona_id: UUID,
+        persona_version_id: UUID,
         guild_id: str | None,
         channel_id: str,
         discord_user_id: str,
@@ -23,6 +24,7 @@ class ConversationRepository:
             select(DiscordConversation)
             .where(
                 DiscordConversation.persona_id == persona_id,
+                DiscordConversation.persona_version_id == persona_version_id,
                 DiscordConversation.guild_id == guild_id,
                 DiscordConversation.channel_id == channel_id,
                 DiscordConversation.discord_user_id == discord_user_id,
@@ -79,12 +81,14 @@ class ConversationRepository:
         self,
         *,
         persona_id: UUID,
+        persona_version_id: UUID,
         guild_id: str | None,
         channel_id: str,
         discord_user_id: str,
     ) -> int:
         conversation = await self.find_active(
             persona_id=persona_id,
+            persona_version_id=persona_version_id,
             guild_id=guild_id,
             channel_id=channel_id,
             discord_user_id=discord_user_id,
@@ -92,6 +96,6 @@ class ConversationRepository:
         if conversation is None:
             return 0
         conversation.is_active = False
-        conversation.last_active_at = datetime.min.replace(tzinfo=UTC)
+        conversation.last_active_at = datetime.now(UTC)
         await self.db.flush()
         return 1

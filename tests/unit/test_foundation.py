@@ -14,7 +14,7 @@ def test_default_intents_are_minimal():
     intents = build_intents(Settings(discord_sync_commands_on_startup=False))
     assert intents.guilds
     assert intents.guild_messages
-    assert intents.dm_messages
+    assert not intents.dm_messages
     assert not intents.message_content
     assert not intents.members
     assert not intents.presences
@@ -36,6 +36,23 @@ def test_empty_and_comma_separated_snowflake_environment_values(monkeypatch):
     assert settings.discord_owner_user_ids == {"10", "20"}
     assert settings.discord_allowed_guild_ids == {"30"}
     assert settings.discord_auto_reply_channel_ids == set()
+
+
+def test_required_ids_and_message_content_intent_are_validated():
+    with pytest.raises(RuntimeError, match="DISCORD_GUILD_ID"):
+        Settings().validate_production_discord()
+    with pytest.raises(RuntimeError, match="MESSAGE_CONTENT_INTENT=true"):
+        Settings(
+            discord_guild_id="123", discord_chat_channel_id="456"
+        ).validate_production_discord()
+    Settings(
+        discord_guild_id="123",
+        discord_chat_channel_id="456",
+        discord_enable_message_content_intent=True,
+        discord_owner_user_ids="789",
+    ).validate_production_discord()
+    with pytest.raises(ValueError, match="positive decimal snowflakes"):
+        Settings(discord_guild_id="guild-id")
 
 
 @pytest.mark.asyncio
@@ -85,12 +102,12 @@ async def test_test_guild_sync_uses_guild_scope():
 
 
 @pytest.mark.asyncio
-async def test_global_sync():
+async def test_command_sync_requires_configured_guild():
     bot = create_bot(
         Settings(discord_sync_commands_on_startup=False, database_url=TEST_DATABASE_URL)
     )
-    bot.tree.sync = AsyncMock(return_value=[])
-    assert await bot.sync_application_commands() == []
+    with pytest.raises(RuntimeError, match="DISCORD_GUILD_ID"):
+        await bot.sync_application_commands()
     await bot.close()
 
 
@@ -108,7 +125,7 @@ async def test_chat_defers_before_model_execution(monkeypatch):
     monkeypatch.setattr(cog, "_service", lambda db: service)
     monkeypatch.setattr(
         "bot.cogs.chat.context_from_interaction",
-        lambda interaction: SimpleNamespace(),
+        lambda interaction: SimpleNamespace(guild_id=None, channel_id="20", discord_user_id="10"),
     )
     monkeypatch.setattr(
         "bot.cogs.chat.send_interaction_result",
@@ -157,6 +174,10 @@ def test_main_requires_token(monkeypatch):
 def test_main_runs_bot_without_exposing_token(monkeypatch):
     settings = Settings(
         discord_bot_token="test-only-token",
+        discord_owner_user_ids="1",
+        discord_guild_id="123456789012345678",
+        discord_chat_channel_id="123456789012345679",
+        discord_enable_message_content_intent=True,
         discord_sync_commands_on_startup=False,
         database_url="sqlite+aiosqlite:///./.cache/tests/main.sqlite3",
     )

@@ -62,6 +62,8 @@ class PersonaGenerationRequest(ChatModel):
     history: list[HistoryMessage]
     resolved_address: str
     effective_personality: ResolvedPersonality
+    abrasive_intensity: Literal["NORMAL", "TEASING", "ABRASIVE"] = "NORMAL"
+    abrasive_style_descriptor: str = ""
     corrective_instruction: str | None = None
 
 
@@ -78,7 +80,12 @@ class ChatResult(ChatModel):
     persona_name: str
     persona_version: str
     answer: str
-    response_origin: Literal["DIRECT_UTTERANCE", "LLM_GENERATED", "SAFE_FALLBACK"]
+    response_origin: Literal[
+        "DIRECT_UTTERANCE",
+        "POLITICAL_CORPUS_UTTERANCE",
+        "CORPUS_COMPOSED",
+        "SAFE_FALLBACK",
+    ]
     selected_utterance_id: UUID | None = None
     boundary_status: Literal["supported", "insufficient_evidence", "safe_fallback"]
     coverage_score: float

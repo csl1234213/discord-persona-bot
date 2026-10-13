@@ -72,8 +72,12 @@ async def send_interaction_result(
     private: bool,
     include_evidence: bool,
     view: discord.ui.View | None = None,
+    disclose: bool = False,
 ) -> None:
-    chunks = split_discord_text(neutralize_mentions(result.answer))
+    answer = result.answer
+    if disclose:
+        answer += "\n\n（AI 風格模擬，並非本人。）"
+    chunks = split_discord_text(neutralize_mentions(answer))
     embed = evidence_embed(result) if include_evidence else None
     for index, chunk in enumerate(chunks):
         kwargs = {
@@ -94,21 +98,21 @@ async def send_message_result(
     result: ChatResult,
     *,
     view: discord.ui.View | None = None,
+    disclose: bool = False,
 ) -> None:
-    chunks = split_discord_text(neutralize_mentions(result.answer))
-    embed = None if result.response_origin == "DIRECT_UTTERANCE" else evidence_embed(result)
+    answer = result.answer
+    if disclose:
+        answer += "\n\n（AI 風格模擬，並非本人。）"
+    chunks = split_discord_text(neutralize_mentions(answer))
+    embed = (
+        None
+        if not result.evidence
+        or result.response_origin in {"DIRECT_UTTERANCE", "POLITICAL_CORPUS_UTTERANCE"}
+        else evidence_embed(result)
+    )
     is_guild_message = message.guild is not None
     prefix = f"<@{message.author.id}> " if is_guild_message else ""
-    allowed_mentions = (
-        discord.AllowedMentions(
-            everyone=False,
-            roles=False,
-            users=[message.author],
-            replied_user=False,
-        )
-        if is_guild_message
-        else discord.AllowedMentions.none()
-    )
+    allowed_mentions = discord.AllowedMentions.none()
     for index, chunk in enumerate(chunks):
         kwargs = {
             "embed": embed if index == 0 else None,

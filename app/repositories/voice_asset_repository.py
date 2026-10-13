@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models import Utterance, UtteranceVoiceAsset
+from app.db.models import Persona, PersonaVersion, Utterance, UtteranceVoiceAsset
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,17 @@ class UtteranceVoiceAssetRepository:
         utterance = await self.db.get(Utterance, asset.utterance_id)
         if utterance is None:
             return VoiceAssetValidation(False, reason="utterance_missing")
+        if self.settings.release_security_mode:
+            version = await self.db.get(PersonaVersion, utterance.persona_version_id)
+            persona = await self.db.get(Persona, version.persona_id) if version else None
+            if (
+                not utterance.verified
+                or not version
+                or version.status != "published"
+                or not persona
+                or persona.active_version_id != version.id
+            ):
+                return VoiceAssetValidation(False, reason="inactive_or_unverified_asset")
         if self._sha256_text(utterance.text) != asset.text_sha256:
             return VoiceAssetValidation(False, reason="text_hash_mismatch")
         root = self.settings.voice_asset_root
@@ -76,7 +87,7 @@ class UtteranceVoiceAssetRepository:
             size = candidate.stat().st_size
         except OSError:
             return VoiceAssetValidation(False, reason="file_unreadable")
-        if size <= 0:
+        if size <= 0 or size > 8 * 1024 * 1024:
             return VoiceAssetValidation(False, reason="empty_file")
         if size != asset.size_bytes:
             return VoiceAssetValidation(False, reason="audio_size_mismatch")
@@ -90,10 +101,16 @@ class UtteranceVoiceAssetRepository:
             return VoiceAssetValidation(False, reason="audio_hash_mismatch")
         return VoiceAssetValidation(True, path=candidate)
 
-    async def resolve_audio_path(self, utterance_id: UUID) -> VoiceAssetValidation:
+    async def resolve_audio_path(
+        self, utterance_id: UUID, *, expected_text: str | None = None
+    ) -> VoiceAssetValidation:
         asset = await self.get_by_utterance_id(utterance_id)
         if asset is None:
             return VoiceAssetValidation(False, reason="asset_missing")
+        if expected_text is not None:
+            utterance = await self.db.get(Utterance, utterance_id)
+            if utterance is None or utterance.text != expected_text:
+                return VoiceAssetValidation(False, reason="response_text_mismatch")
         return await self.validate_asset(asset)
 
     @staticmethod

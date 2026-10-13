@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
+import discord
 import pytest
 
 from app.core.config import Settings
@@ -21,8 +22,10 @@ from app.services.utterance_selector import LexicalUtteranceSelector, normalized
 from app.validators.boundary_validator import BoundaryValidator
 from bot.adapters.interaction_adapter import context_from_interaction
 from bot.adapters.message_adapter import (
+    MessageRoute,
     content_without_mention,
     context_from_message,
+    route_message,
     should_process_message,
 )
 from bot.adapters.response_renderer import (
@@ -456,7 +459,7 @@ def test_boundary_validator_all_deterministic_checks():
     assert "real_person_identity_claim" in result.reason_codes
     assert "named_identity_claim" in result.reason_codes
     assert "fabricated_attributed_quote" in result.reason_codes
-    assert "internal_instruction_leak" in result.reason_codes
+    assert "INTERNAL_TERM_LEAK" in result.reason_codes
     assert any(code.startswith("catchphrase_limit") for code in result.reason_codes)
     assert any(code.startswith("conversation_catchphrase_limit") for code in result.reason_codes)
     assert (
@@ -471,7 +474,8 @@ def message(
 ):
     bot_user = SimpleNamespace(id=99)
     return SimpleNamespace(
-        author=SimpleNamespace(bot=author_bot),
+        content="synthetic message",
+        author=SimpleNamespace(id=30, bot=author_bot),
         webhook_id="hook" if webhook else None,
         guild=None if dm else SimpleNamespace(id=int(guild)),
         channel=SimpleNamespace(id=int(channel)),
@@ -479,26 +483,36 @@ def message(
     )
 
 
-def test_message_routing_privacy_defaults_and_feature_flag():
-    settings = Settings(discord_enable_message_content_intent=False)
-    assert should_process_message(message(dm=True), bot_user_id=99, settings=settings)
+def test_message_routing_matches_single_guild_single_channel_matrix():
+    settings = Settings(discord_guild_id="10", discord_chat_channel_id="20")
+    assert not should_process_message(message(dm=True), bot_user_id=99, settings=settings)
+    assert should_process_message(message(), bot_user_id=99, settings=settings)
     assert should_process_message(message(mentioned=True), bot_user_id=99, settings=settings)
-    assert not should_process_message(message(), bot_user_id=99, settings=settings)
+    assert route_message(
+        message(mentioned=True, channel="21"), bot_user_id=99, settings=settings
+    ) == MessageRoute.REDIRECT
+    assert not should_process_message(
+        message(mentioned=True, channel="21"), bot_user_id=99, settings=settings
+    )
+    assert route_message(
+        message(mentioned=True, guild="11"), bot_user_id=99, settings=settings
+    ) == MessageRoute.IGNORE
     assert not should_process_message(
         message(mentioned=True, author_bot=True), bot_user_id=99, settings=settings
     )
     assert not should_process_message(
         message(mentioned=True, webhook=True), bot_user_id=99, settings=settings
     )
-    enabled = Settings(
-        discord_enable_message_content_intent=True,
-        discord_auto_reply_channel_ids="20",
-        discord_allowed_guild_ids="10",
-    )
-    assert should_process_message(message(), bot_user_id=99, settings=enabled)
-    assert not should_process_message(message(channel="21"), bot_user_id=99, settings=enabled)
-    assert not should_process_message(message(guild="11"), bot_user_id=99, settings=enabled)
+    assert not should_process_message(message(channel="21"), bot_user_id=99, settings=settings)
+    assert not should_process_message(message(guild="11"), bot_user_id=99, settings=settings)
     assert content_without_mention("<@99> 你好 <@!99>", 99) == "你好"
+
+    thread_message = message(channel="20")
+    thread_message.channel = Mock(spec=discord.Thread)
+    thread_message.channel.id = 20
+    assert route_message(
+        thread_message, bot_user_id=99, settings=settings
+    ) == MessageRoute.IGNORE
 
 
 def test_generated_mentions_are_neutralized_and_long_text_splits():
@@ -542,7 +556,7 @@ def chat_result(answer="回答"):
         persona_name="人物",
         persona_version="1.0.0",
         answer=answer,
-        response_origin="LLM_GENERATED",
+        response_origin="CORPUS_COMPOSED",
         boundary_status="supported",
         coverage_score=0.8,
         resolved_address="你",
@@ -578,7 +592,7 @@ async def test_response_renderers_use_safe_mentions_and_embeds():
     allowed_mentions = channel.send.await_args.kwargs["allowed_mentions"]
     assert allowed_mentions.everyone is False
     assert allowed_mentions.roles is False
-    assert allowed_mentions.users == [author]
+    assert allowed_mentions.users is False
 
     direct = chat_result("原始语料")
     direct.response_origin = "DIRECT_UTTERANCE"
@@ -598,6 +612,21 @@ async def test_response_renderers_use_safe_mentions_and_embeds():
     )
     assert direct_channel.send.await_args.args[0].startswith("<@43> ")
     assert direct_channel.send.await_args.kwargs["embed"] is None
+
+    composed_without_evidence = chat_result("正常生成回答")
+    composed_without_evidence.evidence = []
+    composed_without_evidence.coverage_score = 0.0
+    generated_channel = SimpleNamespace(send=AsyncMock())
+    await send_message_result(
+        SimpleNamespace(
+            channel=generated_channel,
+            guild=SimpleNamespace(id=10),
+            author=SimpleNamespace(id=45),
+        ),
+        composed_without_evidence,
+    )
+    assert generated_channel.send.await_args.args[0].startswith("<@45> ")
+    assert generated_channel.send.await_args.kwargs["embed"] is None
 
     dm_channel = SimpleNamespace(send=AsyncMock())
     await send_message_result(

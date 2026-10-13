@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 
 from app.core.config import Settings
+from bot.checks.security import interaction_in_scope
 
 
 def is_owner(settings: Settings, user_id: int | str) -> bool:
@@ -18,6 +19,8 @@ def owner_only():
         settings = interaction.client.settings
         if not is_owner(settings, interaction.user.id):
             raise app_commands.CheckFailure("Bot owner permission required.")
+        if settings.release_security_mode and not interaction_in_scope(interaction, settings):
+            raise app_commands.CheckFailure("Configured guild/channel required.")
         return True
 
     return app_commands.check(predicate)
@@ -26,8 +29,10 @@ def owner_only():
 def owner_or_guild_admin():
     async def predicate(interaction: discord.Interaction) -> bool:
         settings = interaction.client.settings
-        if not (is_owner(settings, interaction.user.id) or interaction_is_guild_admin(interaction)):
-            raise app_commands.CheckFailure("Bot owner or Manage Server permission required.")
+        if not is_owner(settings, interaction.user.id):
+            raise app_commands.CheckFailure("Configured bot owner permission required.")
+        if settings.release_security_mode and not interaction_in_scope(interaction, settings):
+            raise app_commands.CheckFailure("Configured guild/channel required.")
         return True
 
     return app_commands.check(predicate)

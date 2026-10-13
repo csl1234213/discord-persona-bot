@@ -35,3 +35,11 @@ ssh_known_hosts
 *.zip
 htmlcov/
 .coverage
+docs/security/private/
+.secrets/
+config.env
+*.sqlite*
+*.wal
+*.shm
+*.safetensors
+*.gguf

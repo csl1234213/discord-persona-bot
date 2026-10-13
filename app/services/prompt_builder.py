@@ -23,44 +23,37 @@ class PromptBuilder:
         history: list[HistoryMessage],
         user_message: str,
         catchphrases: list[CatchphraseRule],
+        abrasive_intensity: str = "NORMAL",
+        abrasive_style_descriptor: str = "",
     ) -> PersonaGenerationRequest:
+        del evidence, catchphrases
         style_data = {
-            column.name: getattr(style, column.name)
-            for column in StyleProfile.__table__.columns
-            if column.name != "persona_version_id"
+            "sentence_length_preference": style.sentence_length_preference,
+            "paragraph_length_preference": style.paragraph_length_preference,
+            "rhetorical_question_tendency": style.rhetorical_question_tendency,
+            "list_tendency": style.list_tendency,
+            "emoji_policy": style.emoji_policy,
+            "punctuation_density": "low" if not style.punctuation_preferences else "moderate",
         }
-        catchphrase_data = [
-            {
-                "text": item.text,
-                "probability": item.probability,
-                "max_per_response": item.max_per_response,
-                "max_per_conversation": item.max_per_conversation,
-                "allowed_scenes": item.allowed_scenes,
-            }
-            for item in catchphrases
-            if item.enabled
-        ]
         system_prompt = "\n\n".join(
             [
-                f"DISCLOSURE:\n{disclosure}",
                 STRICT_RULES,
-                f"STYLE PROFILE:\n{json.dumps(style_data, ensure_ascii=False, sort_keys=True)}",
+                "SIMULATION DISCLOSURE: " + disclosure,
+                "ABSTRACT STYLE PROFILE (form only):\n"
+                + json.dumps(style_data, ensure_ascii=False, sort_keys=True),
                 "PERSONALITY TONE CONTROLS ONLY:\n"
                 + personality.model_dump_json(exclude={"sources"}),
                 f"ADDRESS: {resolved_address}\nRELATIONSHIP: {relationship or 'unspecified'}",
-                "VERIFIED EVIDENCE:\n"
-                + json.dumps(
-                    [item.model_dump(mode="json") for item in evidence], ensure_ascii=False
-                ),
-                f"CATCHPHRASE RULES:\n{json.dumps(catchphrase_data, ensure_ascii=False)}",
-                "Answer only when the evidence supports the user's topic.",
+                f"STYLE INTENSITY: {abrasive_intensity}\n{abrasive_style_descriptor}",
             ]
         )
         return PersonaGenerationRequest(
             system_prompt=system_prompt,
             user_message=user_message,
-            selected_utterances=evidence,
+            selected_utterances=[],
             history=history,
             resolved_address=resolved_address,
             effective_personality=personality,
+            abrasive_intensity=abrasive_intensity,
+            abrasive_style_descriptor=abrasive_style_descriptor,
         )

@@ -27,7 +27,7 @@ async def test_cooldown_is_per_user_and_does_not_reject_other_guild_members():
 
 
 @pytest.mark.asyncio
-async def test_command_error_handler_uses_safe_response():
+async def test_command_error_handler_uses_safe_response(caplog):
     bot = create_bot(
         Settings(
             discord_sync_commands_on_startup=False,
@@ -35,7 +35,9 @@ async def test_command_error_handler_uses_safe_response():
         )
     )
     response = SimpleNamespace(is_done=lambda: False, send_message=AsyncMock())
-    interaction = SimpleNamespace(response=response, followup=SimpleNamespace(send=AsyncMock()))
+    interaction = SimpleNamespace(
+        id=1234, response=response, followup=SimpleNamespace(send=AsyncMock())
+    )
     await bot.on_app_command_error(
         interaction,
         SimpleNamespace(original=AppError("safe", "可安全显示")),
@@ -44,8 +46,12 @@ async def test_command_error_handler_uses_safe_response():
     await bot.on_app_command_error(interaction, app_commands.CheckFailure("hidden"))
     assert "权限" in response.send_message.await_args.args[0]
     interaction.response = SimpleNamespace(is_done=lambda: True, send_message=AsyncMock())
-    await bot.on_app_command_error(interaction, app_commands.AppCommandError("internal"))
+    await bot.on_app_command_error(
+        interaction, app_commands.AppCommandError("SYNTHETIC_SECRET_DO_NOT_LOG")
+    )
     assert "稍后重试" in interaction.followup.send.await_args.args[0]
+    assert "SYNTHETIC_SECRET_DO_NOT_LOG" not in caplog.text
+    assert "interaction_id=1234 error_type=AppCommandError" in caplog.text
     await bot.close()
 
 

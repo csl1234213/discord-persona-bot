@@ -21,8 +21,8 @@ class VersionCreate(ORMModel):
 
 
 class UtteranceCreate(ORMModel):
-    text: str = Field(min_length=1)
-    context: str = ""
+    text: str = Field(min_length=1, max_length=4000)
+    context: str = Field(default="", max_length=4000)
     topic: str | None = None
     audience_type: str | None = None
     relationship: str | None = None

@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.authorization import admin_required
 from app.core.config import Settings
 from app.core.errors import AppError
 from app.db.models import DiscordConversation, Persona, PersonaVersion, Utterance
@@ -32,6 +33,7 @@ class PersonaCorpusAppendService:
         self.db = db
         self.settings = settings
 
+    @admin_required
     async def append_text_file(
         self,
         *,

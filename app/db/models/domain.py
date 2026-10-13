@@ -221,6 +221,22 @@ class DiscordMessageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SecurityUsage(Base):
+    __tablename__ = "security_usage"
+
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    actor: Mapped[str] = mapped_column(String(64), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_micros: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AdminInteraction(Base):
+    __tablename__ = "admin_interactions"
+    event_id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    expires: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class GuildConfig(TimestampMixin, Base):
     __tablename__ = "guild_configs"
 

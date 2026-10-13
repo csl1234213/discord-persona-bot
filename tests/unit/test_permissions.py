@@ -51,7 +51,11 @@ async def test_owner_admin_and_guild_scope_decorators():
         user=SimpleNamespace(id=999, guild_permissions=SimpleNamespace(manage_guild=True)),
         client=SimpleNamespace(settings=Settings(discord_owner_user_ids="1")),
     )
+    with pytest.raises(app_commands.CheckFailure):
+        await admin_command.checks[0](admin_interaction)
+    admin_interaction.user.id = 1
     assert await admin_command.checks[0](admin_interaction)
+    admin_interaction.user.id = 999
     admin_interaction.user.guild_permissions.manage_guild = False
     with pytest.raises(app_commands.CheckFailure):
         await admin_command.checks[0](admin_interaction)

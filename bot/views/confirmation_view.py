@@ -24,6 +24,8 @@ class ConfirmationView(discord.ui.View):
 
     @discord.ui.button(label="确认导入", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.confirmed or not await self.interaction_check(interaction):
+            return
         self.confirmed = True
         await self.on_confirm_callback(interaction)
         for child in self.children:

@@ -6,13 +6,14 @@ import pytest
 
 from app.core.config import Settings
 from app.schemas.chat import DiscordContext
+from bot.adapters.message_adapter import REDIRECT_MESSAGE
 from bot.checks.cooldown import CooldownManager
 from bot.cogs.chat import ChatCog
 
 
 class AsyncContext:
     async def __aenter__(self):
-        return SimpleNamespace()
+        return SimpleNamespace(info={})
 
     async def __aexit__(self, exc_type, exc, traceback):
         return False
@@ -60,26 +61,30 @@ async def test_reset_settings_and_persona_info_callbacks(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("is_dm", [True, False])
-async def test_dm_or_mention_message_invokes_chat(monkeypatch, is_dm):
+async def test_dm_is_ignored_and_chat_channel_mention_invokes_chat(monkeypatch):
     result = SimpleNamespace(answer="回答")
     service = SimpleNamespace(chat=AsyncMock(return_value=result))
     typing = AsyncContext()
     channel = SimpleNamespace(id=20, typing=lambda: typing, send=AsyncMock())
     message = SimpleNamespace(
         id=50,
-        content="你好" if is_dm else "<@99> 你好",
+        content="<@99> 你好",
         author=SimpleNamespace(id=30, bot=False, roles=[]),
         webhook_id=None,
-        guild=None if is_dm else SimpleNamespace(id=10),
+        guild=SimpleNamespace(id=10),
         channel=channel,
-        mentions=[] if is_dm else [SimpleNamespace(id=99)],
+        mentions=[SimpleNamespace(id=99)],
     )
     bot = SimpleNamespace(
         user=SimpleNamespace(id=99),
-        settings=Settings(discord_sync_commands_on_startup=False),
+        settings=Settings(
+            discord_guild_id="10",
+            discord_chat_channel_id="20",
+            discord_sync_commands_on_startup=False,
+        ),
         db_sessionmaker=lambda: AsyncContext(),
         cooldowns=SimpleNamespace(acquire=AsyncMock()),
+        redirect_cooldowns=SimpleNamespace(acquire=AsyncMock()),
         chat_semaphore=asyncio.Semaphore(8),
     )
     cog = ChatCog(bot)
@@ -92,7 +97,48 @@ async def test_dm_or_mention_message_invokes_chat(monkeypatch, is_dm):
     )
     await cog.on_message(message)
     assert service.chat.await_args.args[0] == "你好"
-    renderer.assert_awaited_once_with(message, result)
+    renderer.assert_awaited_once_with(message, result, disclose=False)
+
+    dm = SimpleNamespace(
+        author=SimpleNamespace(id=30, bot=False, roles=[]),
+        webhook_id=None,
+        guild=None,
+        channel=channel,
+        mentions=[],
+        content="你好",
+    )
+    await cog.on_message(dm)
+    assert service.chat.await_count == 1
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_other_channel_mention_only_redirects_without_chat_side_effects(monkeypatch):
+    channel = SimpleNamespace(id=21, send=AsyncMock())
+    message = SimpleNamespace(
+        id=51,
+        content="<@99> 你是谁",
+        author=SimpleNamespace(id=30, bot=False, roles=[]),
+        webhook_id=None,
+        guild=SimpleNamespace(id=10),
+        channel=channel,
+        mentions=[SimpleNamespace(id=99)],
+    )
+    service = SimpleNamespace(chat=AsyncMock())
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=99),
+        settings=Settings(discord_guild_id="10", discord_chat_channel_id="20"),
+        redirect_cooldowns=SimpleNamespace(acquire=AsyncMock()),
+    )
+    cog = ChatCog(bot)
+    monkeypatch.setattr(cog, "_service", lambda db: service)
+
+    await cog.on_message(message)
+
+    channel.send.assert_awaited_once()
+    assert channel.send.await_args.args == (REDIRECT_MESSAGE,)
+    assert service.chat.await_count == 0
+    bot.redirect_cooldowns.acquire.assert_awaited_once_with("30", "10")
 
 
 @pytest.mark.asyncio
@@ -125,9 +171,14 @@ async def test_many_concurrent_members_in_same_guild_all_receive_answers(monkeyp
 
     bot = SimpleNamespace(
         user=SimpleNamespace(id=99),
-        settings=Settings(discord_sync_commands_on_startup=False),
+        settings=Settings(
+            discord_guild_id="10",
+            discord_chat_channel_id="20",
+            discord_sync_commands_on_startup=False,
+        ),
         db_sessionmaker=lambda: AsyncContext(),
         cooldowns=CooldownManager(user_seconds=3, guild_seconds=1),
+        redirect_cooldowns=CooldownManager(user_seconds=10, guild_seconds=0),
         chat_semaphore=asyncio.Semaphore(4),
     )
     cog = ChatCog(bot)
@@ -150,4 +201,4 @@ async def test_many_concurrent_members_in_same_guild_all_receive_answers(monkeyp
     assert renderer.await_count == len(messages)
     assert maximum == 4
     for message in messages:
-        renderer.assert_any_await(message, result)
+        renderer.assert_any_await(message, result, disclose=False)

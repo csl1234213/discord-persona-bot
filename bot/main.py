@@ -20,13 +20,15 @@ async def run_smoke_test() -> None:
 
 def main() -> None:
     settings = get_settings()
-    settings.ensure_local_directories()
     configure_logging(settings.log_level)
     if settings.bot_smoke_test_mode:
+        settings.ensure_local_directories()
         asyncio.run(run_smoke_test())
         return
     if settings.discord_bot_token is None:
         raise RuntimeError("DISCORD_BOT_TOKEN is required to connect to Discord.")
+    settings.validate_production_discord()
+    settings.ensure_local_directories()
     bot = create_bot(settings)
     bot.run(settings.discord_bot_token.get_secret_value(), log_handler=None)
 

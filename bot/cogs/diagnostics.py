@@ -4,6 +4,7 @@ from discord.ext import commands
 from sqlalchemy import text
 
 from bot.checks.admin import owner_only
+from bot.checks.security import admin_session
 from bot.cogs.chat import DISCLOSURE
 
 
@@ -25,6 +26,9 @@ class DiagnosticsCog(commands.Cog):
     @app_commands.command(name="bot-status", description="查看机器人就绪状态")
     @owner_only()
     async def status_command(self, interaction: discord.Interaction) -> None:
+        if self.bot.settings.release_security_mode:
+            async with admin_session(self.bot, interaction):
+                pass
         intents = self.bot.intents
         await interaction.response.send_message(
             (
@@ -37,31 +41,28 @@ class DiagnosticsCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    @app_commands.command(name="bot-sync-commands", description="同步测试公会或全局命令")
+    @app_commands.command(name="bot-sync-commands", description="同步命令到配置的服务器")
     @owner_only()
-    async def sync_commands(
-        self,
-        interaction: discord.Interaction,
-        scope: str,
-    ) -> None:
+    async def sync_commands(self, interaction: discord.Interaction) -> None:
+        if self.bot.settings.release_security_mode:
+            async with admin_session(self.bot, interaction):
+                pass
         await interaction.response.defer(ephemeral=True)
-        if scope == "test-guild":
-            if not self.bot.settings.discord_test_guild_id:
-                await interaction.followup.send("未配置测试公会 ID。", ephemeral=True)
-                return
-            guild = discord.Object(id=int(self.bot.settings.discord_test_guild_id))
-            self.bot.tree.copy_global_to(guild=guild)
-            synced = await self.bot.tree.sync(guild=guild)
-        elif scope == "global":
-            synced = await self.bot.tree.sync()
-        else:
-            await interaction.followup.send("scope 必须是 test-guild 或 global。", ephemeral=True)
+        guild_id = self.bot.settings.discord_guild_id
+        if guild_id is None:
+            await interaction.followup.send("未配置 DISCORD_GUILD_ID。", ephemeral=True)
             return
+        guild = discord.Object(id=int(guild_id))
+        self.bot.tree.copy_global_to(guild=guild)
+        synced = await self.bot.tree.sync(guild=guild)
         await interaction.followup.send(f"已同步 {len(synced)} 个命令。", ephemeral=True)
 
     @app_commands.command(name="bot-reload-persona", description="重新读取当前人物配置")
     @owner_only()
     async def reload_persona(self, interaction: discord.Interaction) -> None:
+        if self.bot.settings.release_security_mode:
+            async with admin_session(self.bot, interaction):
+                pass
         await interaction.response.send_message(
             "人物配置由数据库按请求读取，无需清空进程缓存。", ephemeral=True
         )
@@ -69,6 +70,9 @@ class DiagnosticsCog(commands.Cog):
     @app_commands.command(name="bot-db-status", description="检查数据库连接与迁移就绪状态")
     @owner_only()
     async def db_status(self, interaction: discord.Interaction) -> None:
+        if self.bot.settings.release_security_mode:
+            async with admin_session(self.bot, interaction):
+                pass
         async with self.bot.db_sessionmaker() as db:
             await db.execute(text("SELECT 1"))
         await interaction.response.send_message("database=ready", ephemeral=True)

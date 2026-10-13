@@ -7,8 +7,10 @@ from sqlalchemy import select
 
 from app.core.errors import AppError
 from app.db.models import AddressRule, PersonalityProfile, StyleProfile
+from app.services.persona_configuration_service import PersonaConfigurationService
 from app.services.persona_update_service import PersonaUpdateService
 from bot.checks.admin import owner_only
+from bot.checks.security import admin_session, require_origin
 from bot.modals.address_modal import AddressModal
 from bot.modals.style_modal import StyleModal
 from bot.views.pagination_view import PaginationView
@@ -26,7 +28,7 @@ class StyleAdminCog(commands.Cog):
     @style.command(name="show", description="显示版本表达风格")
     @owner_only()
     async def style_show(self, interaction: discord.Interaction, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             profile = await db.get(StyleProfile, UUID(version_id))
         if profile is None:
             await interaction.response.send_message("风格配置不存在。", ephemeral=True)
@@ -40,7 +42,7 @@ class StyleAdminCog(commands.Cog):
     @style.command(name="edit", description="通过 Modal 编辑草稿表达风格")
     @owner_only()
     async def style_edit(self, interaction: discord.Interaction, persona_id: str, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
             profile = await db.get(StyleProfile, UUID(version_id))
             initial = {
@@ -50,12 +52,11 @@ class StyleAdminCog(commands.Cog):
             }
 
         async def save(save_interaction: discord.Interaction, values: dict) -> None:
-            async with self.bot.db_sessionmaker() as db:
-                await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-                target = await db.get(StyleProfile, UUID(version_id))
-                for key, value in values.items():
-                    setattr(target, key, value)
-                await db.commit()
+            require_origin(interaction, save_interaction)
+            async with admin_session(self.bot, save_interaction) as db:
+                await PersonaConfigurationService(db).update(
+                    UUID(persona_id), UUID(version_id), "style", values
+                )
             await save_interaction.response.send_message("风格已保存。", ephemeral=True)
 
         await interaction.response.send_modal(StyleModal(on_submit_callback=save, initial=initial))
@@ -63,7 +64,7 @@ class StyleAdminCog(commands.Cog):
     @personality.command(name="show", description="显示版本人格默认值")
     @owner_only()
     async def personality_show(self, interaction: discord.Interaction, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             profile = await db.get(PersonalityProfile, UUID(version_id))
         if profile is None:
             await interaction.response.send_message("人格配置不存在。", ephemeral=True)
@@ -81,14 +82,11 @@ class StyleAdminCog(commands.Cog):
         self, interaction: discord.Interaction, persona_id: str, version_id: str
     ):
         async def save(save_interaction: discord.Interaction, values: dict[str, float]) -> None:
-            async with self.bot.db_sessionmaker() as db:
-                await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-                profile = await db.get(PersonalityProfile, UUID(version_id))
-                for key, value in values.items():
-                    if not hasattr(profile, key):
-                        raise AppError("unknown_trait", "Unknown personality trait.")
-                    setattr(profile, key, value)
-                await db.commit()
+            require_origin(interaction, save_interaction)
+            async with admin_session(self.bot, save_interaction) as db:
+                await PersonaConfigurationService(db).update(
+                    UUID(persona_id), UUID(version_id), "personality", values
+                )
             await save_interaction.response.send_message(
                 "人格值已保存；系统安全上限仍会优先。", ephemeral=True
             )
@@ -102,16 +100,15 @@ class StyleAdminCog(commands.Cog):
     @owner_only()
     async def address_add(self, interaction: discord.Interaction, persona_id: str, version_id: str):
         async def save(save_interaction: discord.Interaction, values: dict) -> None:
-            async with self.bot.db_sessionmaker() as db:
-                await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-                db.add(
-                    AddressRule(
-                        persona_version_id=UUID(version_id),
-                        guild_id=str(interaction.guild_id) if interaction.guild_id else None,
-                        **values,
-                    )
+            require_origin(interaction, save_interaction)
+            async with admin_session(self.bot, save_interaction) as db:
+                await PersonaConfigurationService(db).update(
+                    UUID(persona_id),
+                    UUID(version_id),
+                    "address",
+                    values,
+                    guild_id=str(save_interaction.guild_id),
                 )
-                await db.commit()
             await save_interaction.response.send_message("称呼规则已添加。", ephemeral=True)
 
         await interaction.response.send_modal(AddressModal(on_submit_callback=save))
@@ -119,7 +116,7 @@ class StyleAdminCog(commands.Cog):
     @address.command(name="list", description="分页列出称呼规则")
     @owner_only()
     async def address_list(self, interaction: discord.Interaction, version_id: str):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             rules = list(
                 await db.scalars(
                     select(AddressRule).where(AddressRule.persona_version_id == UUID(version_id))
@@ -143,7 +140,7 @@ class StyleAdminCog(commands.Cog):
         version_id: str,
         rule_id: str,
     ):
-        async with self.bot.db_sessionmaker() as db:
+        async with admin_session(self.bot, interaction) as db:
             await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
             rule = await db.get(AddressRule, UUID(rule_id))
             if rule is None or rule.persona_version_id != UUID(version_id):
@@ -160,12 +157,11 @@ class StyleAdminCog(commands.Cog):
             }
 
         async def save(save_interaction: discord.Interaction, values: dict) -> None:
-            async with self.bot.db_sessionmaker() as db:
-                await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-                target = await db.get(AddressRule, UUID(rule_id))
-                for key, value in values.items():
-                    setattr(target, key, value)
-                await db.commit()
+            require_origin(interaction, save_interaction)
+            async with admin_session(self.bot, save_interaction) as db:
+                await PersonaConfigurationService(db).update(
+                    UUID(persona_id), UUID(version_id), "address", values, record_id=UUID(rule_id)
+                )
             await save_interaction.response.send_message("称呼规则已更新。", ephemeral=True)
 
         await interaction.response.send_modal(
@@ -181,11 +177,8 @@ class StyleAdminCog(commands.Cog):
         version_id: str,
         rule_id: str,
     ):
-        async with self.bot.db_sessionmaker() as db:
-            await PersonaUpdateService(db).require_draft(UUID(persona_id), UUID(version_id))
-            rule = await db.get(AddressRule, UUID(rule_id))
-            if rule is None or rule.persona_version_id != UUID(version_id):
-                raise AppError("rule_not_found", "Address rule not found.")
-            await db.delete(rule)
-            await db.commit()
+        async with admin_session(self.bot, interaction) as db:
+            await PersonaConfigurationService(db).delete_address(
+                UUID(persona_id), UUID(version_id), UUID(rule_id)
+            )
         await interaction.response.send_message("称呼规则已删除。", ephemeral=True)

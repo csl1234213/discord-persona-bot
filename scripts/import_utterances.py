@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from uuid import UUID
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.session import build_engine, build_sessionmaker
 from app.services.attachment_import_service import AttachmentImportService
@@ -24,6 +25,7 @@ async def import_file(
     try:
         sessionmaker = build_sessionmaker(engine)
         async with sessionmaker() as db:
+            grant_local_admin(db)
             importer = AttachmentImportService(db, settings)
             preview = await importer.preview(
                 version_id=version_id,

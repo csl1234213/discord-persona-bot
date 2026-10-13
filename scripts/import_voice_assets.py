@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.core.authorization import grant_local_admin  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 from app.db.session import build_engine, build_sessionmaker  # noqa: E402
 from app.services.voice_asset_import_service import (  # noqa: E402
@@ -43,6 +44,7 @@ async def run(args: argparse.Namespace) -> None:
     session_factory = build_sessionmaker(engine)
     try:
         async with session_factory() as session:
+            grant_local_admin(session)
             service = VoiceAssetImportService(session, settings)
             kwargs = {
                 "persona_name": args.persona_name,

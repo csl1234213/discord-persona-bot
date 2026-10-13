@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from app.core.authorization import grant_local_admin
 from app.core.config import Settings
 from app.db.session import build_engine, build_sessionmaker
 from app.services.persona_corpus_append_service import PersonaCorpusAppendService
@@ -25,6 +26,7 @@ async def run(args: argparse.Namespace) -> None:
     session_factory = build_sessionmaker(engine)
     try:
         async with session_factory() as session:
+            grant_local_admin(session)
             report = await PersonaCorpusAppendService(session, settings).append_text_file(
                 persona_name=args.persona_name,
                 target_version=args.target_version,

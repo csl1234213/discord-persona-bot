@@ -14,9 +14,14 @@ from bot.cogs.utterance_admin import UtteranceAdminCog
 def interaction(*, guild_id=100):
     return SimpleNamespace(
         guild_id=guild_id,
+        channel_id=200,
         response=SimpleNamespace(send_message=AsyncMock()),
         user=SimpleNamespace(id=1),
-        client=SimpleNamespace(settings=Settings(discord_owner_user_ids="1")),
+        client=SimpleNamespace(
+            settings=Settings(
+                discord_owner_user_ids="1", discord_guild_id="100", discord_chat_channel_id="200"
+            )
+        ),
     )
 
 
